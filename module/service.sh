@@ -92,5 +92,17 @@ if [ -f "$MODDIR/system/bin/encore_transsion" ]; then
 		>>"$MODULE_CONFIG/transsion.log" 2>&1
 fi
 
+# Keep encored alive from now on. The watchdog starts it (it waits for
+# boot_completed itself) and restarts it if it ever exits - including after a
+# soft reboot, where no module script runs.
+if [ -f "$MODDIR/system/bin/encore_daemon_watch" ]; then
+	export MODDIR
+	if command -v setsid >/dev/null 2>&1; then
+		setsid "$MODDIR/system/bin/encore_daemon_watch" >/dev/null 2>&1 &
+	else
+		nohup "$MODDIR/system/bin/encore_daemon_watch" >/dev/null 2>&1 &
+	fi
+fi
+
 # Start Encore Daemon
 encored daemon

@@ -14,6 +14,16 @@
 # limitations under the License.
 #
 
+# Stop the watchdog first, or it would restart the daemon we are removing.
+if [ -f /data/adb/.config/encore/.daemon_watchdog.pid ]; then
+	wpid=$(cat /data/adb/.config/encore/.daemon_watchdog.pid 2>/dev/null)
+	if [ -n "$wpid" ] && [ -d "/proc/$wpid" ]; then
+		case "$(tr -d '\0' <"/proc/$wpid/cmdline" 2>/dev/null)" in
+		*daemon_watch*) kill "$wpid" 2>/dev/null ;;
+		esac
+	fi
+fi
+
 # Put the stock USF config back before the module files disappear.
 MODDIR=${0%/*}
 if [ -x "$MODDIR/system/bin/encore_transsion" ]; then
@@ -24,7 +34,7 @@ fi
 rm -rf /data/adb/.config/encore
 rm -f /data/adb/service.d/.encore_cleanup.sh
 
-need_gone="encored encore_profiler encore_utility encore_log encore_transsion"
+need_gone="encored encore_profiler encore_utility encore_log encore_transsion encore_daemon_watch"
 manager_paths="/data/adb/ap/bin /data/adb/ksu/bin"
 
 for dir in $manager_paths; do

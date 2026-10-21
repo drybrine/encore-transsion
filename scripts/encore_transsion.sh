@@ -38,7 +38,7 @@
 #
 # The preference lives in $MODULE_CONFIG/transsion_unlock ("1"/"0").
 
-MODULE_ID="encore-transsion"
+MODULE_ID="encore"   # must match the prebuilt encored binary's hardcoded MODPATH
 MODULE_CONFIG=${TRANS_SION_CONFIG:-/data/adb/.config/encore}
 PREF="$MODULE_CONFIG/transsion_unlock"
 

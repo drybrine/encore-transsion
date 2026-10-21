@@ -156,6 +156,7 @@ extract "$ZIPFILE" 'cleanup.sh' "$MODPATH"
 extract "$ZIPFILE" 'binder_resolver.apk' "$MODPATH"
 extract "$ZIPFILE" 'system/bin/encore_profiler' "$MODPATH"
 extract "$ZIPFILE" 'system/bin/encore_utility' "$MODPATH"
+extract "$ZIPFILE" 'system/bin/encore_daemon_watch' "$MODPATH"
 cp "$MODPATH/module.prop" "$MODPATH/module.prop.orig"
 
 # Target architecture
@@ -180,13 +181,14 @@ if [ "$KSU" = "true" ] || [ "$APATCH" = "true" ]; then
 
 	# symlink ourselves on $PATH
 	manager_paths="/data/adb/ap/bin /data/adb/ksu/bin"
-	BIN_PATH="/data/adb/modules/encore-transsion/system/bin"
+	BIN_PATH="/data/adb/modules/encore/system/bin"
 	for dir in $manager_paths; do
 		[ -d "$dir" ] && {
 			ui_print "- Creating symlink in $dir"
 			ln -sf "$BIN_PATH/encored" "$dir/encored"
 			ln -sf "$BIN_PATH/encore_profiler" "$dir/encore_profiler"
 			ln -sf "$BIN_PATH/encore_utility" "$dir/encore_utility"
+			ln -sf "$BIN_PATH/encore_daemon_watch" "$dir/encore_daemon_watch"
 		}
 	done
 fi
@@ -197,6 +199,7 @@ extract "$ZIPFILE" 'system/bin/encore_transsion' "$MODPATH"
 extract "$ZIPFILE" 'system/bin/transsion_patch_xml.awk' "$MODPATH"
 extract "$ZIPFILE" 'system/bin/transsion_verify_xml.awk' "$MODPATH"
 chmod 755 "$MODPATH/system/bin/encore_transsion"
+chmod 755 "$MODPATH/system/bin/encore_daemon_watch"
 MODDIR="$MODPATH"
 export MODDIR
 "$MODPATH/system/bin/encore_transsion" install

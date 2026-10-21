@@ -1,5 +1,33 @@
 # Changelog
 
+## v5.2.2-transsion.2
+
+Fixes the daemon not coming back after a soft reboot, and the module id that
+the prebuilt binary requires.
+
+### Fixed
+- **`encored` never started.** The prebuilt daemon has its module path compiled
+  in (`/data/adb/modules/encore`), and it loads
+  `MODPATH/binder_resolver.apk` during init. With a fork id of
+  `encore-transsion` that file was not where the binary looks, so the daemon
+  exited immediately and the WebUI reported "Service inactive". The module id
+  is now `encore` again — the fork lives in the repo name, not in the id.
+  Installing this over upstream Encore is a normal in-place upgrade.
+- **Nothing restarted the daemon after a soft reboot.** A soft reboot restarts
+  the framework but re-runs no module script, so the daemon died while root
+  and the USF bind mount survived. New `encore_daemon_watch` stays resident,
+  starts `encored` once `sys.boot_completed` is set, and restarts it within one
+  poll if it ever exits — soft reboot, crash, or a failed gamelist load. It
+  stops itself when the module is disabled or removed.
+- The watchdog is started from `post-fs-data.sh` (permanent root) and from
+  `service.sh` (late-load / GhostLock), so both paths get it.
+
+### Note
+The USF unlock itself was already working: `clusterCpu0=0` with
+`policy0 2.0/2.0` and `policy4 2.6/2.6` on an Infinix Note 60 at
+`tempLevel=43` — a skin band whose stock caps are 1.7 / 2.1 GHz.
+
+
 ## v5.2.2-transsion.1
 
 First build of the Transsion fork. Upstream Encore Tweaks 5.2.2, unchanged,

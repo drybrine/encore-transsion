@@ -17,7 +17,7 @@
 
 # shellcheck disable=SC2016
 
-MODULE_DIR="/data/adb/modules/encore-transsion"
+MODULE_DIR="/data/adb/modules/encore"
 THIS_SCRIPT="/data/adb/service.d/.encore_cleanup.sh"
 
 # The bind mount outlives a module disable, so drop it explicitly: a disabled

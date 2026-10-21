@@ -33,7 +33,9 @@ jobs:
           submodules: true
 
       - name: Host tests (Transsion integration)
-        run: sh tests/test_transsion.sh
+        run: |
+          sh tests/test_transsion.sh
+          sh tests/test_daemon_watch.sh
 
       - name: NDK Setup
         uses: nttld/setup-ndk@v1
