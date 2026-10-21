@@ -50,7 +50,7 @@ save_logs() {
 	{
 		echo "*****************************************************"
 		echo "Encore Tweaks Log"
-		echo "Module Version: $(awk -F'=' '/version=/ {print $2}' /data/adb/modules/encore/module.prop)"
+		echo "Module Version: $(awk -F'=' '/version=/ {print $2}' /data/adb/modules/encore-transsion/module.prop)"
 		echo "Chipset: $SOC $(getprop ro.board.platform)"
 		echo "Fingerprint: $(getprop ro.build.fingerprint)"
 		echo "Android SDK: $(getprop ro.build.version.sdk)"
@@ -110,7 +110,7 @@ logcat() {
 
 	# Info block
 	echo -e "
-\e[1;32mModule Version:\e[0m $(awk -F'=' '/version=/ {print $2}' /data/adb/modules/encore/module.prop)
+\e[1;32mModule Version:\e[0m $(awk -F'=' '/version=/ {print $2}' /data/adb/modules/encore-transsion/module.prop)
 \e[1;32mChipset:\e[0m        $SOC $(getprop ro.board.platform)
 \e[1;32mFingerprint:\e[0m    $(getprop ro.build.fingerprint)
 \e[1;32mAndroid SDK:\e[0m    $(getprop ro.build.version.sdk)

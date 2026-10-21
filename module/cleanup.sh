@@ -17,8 +17,16 @@
 
 # shellcheck disable=SC2016
 
-MODULE_DIR="/data/adb/modules/encore"
+MODULE_DIR="/data/adb/modules/encore-transsion"
 THIS_SCRIPT="/data/adb/service.d/.encore_cleanup.sh"
+
+# The bind mount outlives a module disable, so drop it explicitly: a disabled
+# module must leave stock thermal behaviour behind.
+if [ -d "$MODULE_DIR/disable" ] && [ -x "$MODULE_DIR/system/bin/encore_transsion" ]; then
+  MODDIR="$MODULE_DIR"
+  export MODDIR
+  "$MODULE_DIR/system/bin/encore_transsion" restore >/dev/null 2>&1
+fi
 
 if [ ! -d "$MODULE_DIR/disable" ]; then
   cat "$MODULE_DIR/module.prop.orig" >"$MODULE_DIR/module.prop"

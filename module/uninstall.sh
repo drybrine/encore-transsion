@@ -14,10 +14,17 @@
 # limitations under the License.
 #
 
+# Put the stock USF config back before the module files disappear.
+MODDIR=${0%/*}
+if [ -x "$MODDIR/system/bin/encore_transsion" ]; then
+	export MODDIR
+	"$MODDIR/system/bin/encore_transsion" restore >/dev/null 2>&1
+fi
+
 rm -rf /data/adb/.config/encore
 rm -f /data/adb/service.d/.encore_cleanup.sh
 
-need_gone="encored encore_profiler encore_utility encore_log"
+need_gone="encored encore_profiler encore_utility encore_log encore_transsion"
 manager_paths="/data/adb/ap/bin /data/adb/ksu/bin"
 
 for dir in $manager_paths; do

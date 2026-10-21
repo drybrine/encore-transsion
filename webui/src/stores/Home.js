@@ -4,7 +4,7 @@ import { exec } from 'kernelsu'
 import * as KernelSU from '@/helpers/KernelSU'
 
 const configPath = '/data/adb/.config/encore'
-const modPath = '/data/adb/modules/encore'
+const modPath = '/data/adb/modules/encore-transsion'
 
 export const useHomeStore = defineStore('home', () => {
   const daemonPidRaw = ref('')

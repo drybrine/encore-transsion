@@ -1,9 +1,9 @@
-id=encore
-name=Encore Tweaks
+id=encore-transsion
+name=Encore Tweaks (Transsion)
 version=
 versionCode=
-author=Rem01Gaming
-description=Special performance module for your Device.
-updateJson=https://encore.rem01gaming.dev/api/update.json
+author=drybrine, Rem01Gaming
+description=Encore Tweaks for Infinix / Tecno / itel (Transsion XOS). Same tweaks as upstream, plus a fix for the one thing that defeated them on these devices: com.transsion.usf caps the CPU clusters from a virtual skin temperature, so Encore's clock tweaks were being clamped underneath it. This build removes only that CPU cap.
+updateJson=https://raw.githubusercontent.com/drybrine/encore-transsion/main/update.json
 banner=banner.webp
 webuiIcon=webroot/icon.webp

@@ -1,0 +1,127 @@
+#!/bin/sh
+# Host-side tests for scripts/encore_transsion.sh.
+#
+# The mount/restart paths need root and a real USF, so they are not exercised
+# here (they are the same code paths proven in usf-cpu-unlock). What IS tested
+# is everything that can silently go wrong on a PC:
+#   - detection (Transsion vs not) and the messages users see
+#   - the persisted preference and that boot/install honour it
+#   - the XML patch pipeline against the same fixtures as the parent module
+#   - graceful failure: no config, no patcher, unknown command
+set -u
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+BIN=$ROOT/scripts/encore_transsion.sh
+FIX=$ROOT/tests/fixtures
+TMP=$(mktemp -d) || exit 1
+trap 'rm -rf "$TMP"' EXIT
+
+pass=0
+fail=0
+ok()  { pass=$((pass + 1)); printf 'ok   %s\n' "$1"; }
+bad() { fail=$((fail + 1)); printf 'FAIL %s: %s\n' "$1" "$2"; }
+
+run() { # run <args...> with an isolated config dir and no USF present
+  TRANS_SION_CONFIG="$TMP/cfg" TRANS_SION_SRC="${TSRC:-}" \
+    sh "$BIN" "$@" 2>&1
+}
+
+t_usage() {
+  out=$(run bogus); rc=$?
+  [ "$rc" -eq 2 ] || { bad usage "exit $rc, expected 2"; return; }
+  echo "$out" | grep -q 'usage:' || { bad usage "no usage text"; return; }
+  ok usage
+}
+
+t_not_transsion() {
+  # No override and no real config on the host: must report and exit cleanly.
+  out=$(TRANS_SION_CONFIG="$TMP/cfg" sh "$BIN" status 2>&1); rc=$?
+  [ "$rc" -eq 0 ] || { bad no-transsion "exit $rc"; return; }
+  echo "$out" | grep -q 'not a Transsion XOS build' || { bad no-transsion "got: $out"; return; }
+  ok no-transsion
+}
+
+t_install_skips_cleanly() {
+  out=$(TRANS_SION_CONFIG="$TMP/cfg" sh "$BIN" install 2>&1); rc=$?
+  [ "$rc" -eq 0 ] || { bad install-skip "exit $rc"; return; }
+  echo "$out" | grep -q 'skipped' || { bad install-skip "got: $out"; return; }
+  # it must not have created a preference for a device it cannot help
+  [ -f "$TMP/cfg/transsion_unlock" ] && { bad install-skip "preference written anyway"; return; }
+  ok install-skip
+}
+
+t_status_with_config() {
+  TSRC="$FIX/pretty.xml" run status > "$TMP/out" 2>&1
+  grep -q 'usf cap     : stock' "$TMP/out" || { bad status "no stock line: $(cat "$TMP/out")"; return; }
+  grep -q 'preference  : disabled' "$TMP/out" || { bad status "preference default wrong"; return; }
+  grep -q 'cpufreq caps' "$TMP/out" || { bad status "no ceilings section"; return; }
+  ok status
+}
+
+t_preference() {
+  rm -rf "$TMP/cfg"
+  TSRC="$FIX/pretty.xml" run enable >/dev/null 2>&1
+  [ "$(cat "$TMP/cfg/transsion_unlock" 2>/dev/null)" = "1" ] \
+    || { bad pref "enable did not persist"; return; }
+  TSRC="$FIX/pretty.xml" run disable >/dev/null 2>&1
+  [ "$(cat "$TMP/cfg/transsion_unlock" 2>/dev/null)" = "0" ] \
+    || { bad pref "disable did not persist"; return; }
+  ok preference
+}
+
+t_boot_honours_preference() {
+  rm -rf "$TMP/cfg"; mkdir -p "$TMP/cfg"
+  printf '0\n' > "$TMP/cfg/transsion_unlock"
+  out=$(TSRC="$FIX/pretty.xml" run boot 2>&1); rc=$?
+  [ "$rc" -eq 0 ] || { bad boot-pref "exit $rc"; return; }
+  # disabled -> must not attempt anything (no log line about mounting)
+  echo "$out" | grep -qi 'mount' && { bad boot-pref "tried to mount while disabled: $out"; return; }
+  ok boot-pref
+}
+
+t_patch_pipeline() {
+  # Same fixtures the parent module uses: the patched output must verify and
+  # keep every <temp_config> row.
+  for fx in pretty minified partial; do
+    awk -f "$ROOT/scripts/transsion_patch_xml.awk" "$FIX/$fx.xml" > "$TMP/$fx.out" 2>"$TMP/$fx.err" \
+      || { bad "patch-$fx" "patcher failed: $(cat "$TMP/$fx.err")"; return; }
+    awk -f "$ROOT/scripts/transsion_verify_xml.awk" "$TMP/$fx.out" 2>>"$TMP/$fx.err" \
+      || { bad "patch-$fx" "verifier rejected output"; return; }
+    a=$(grep -o '<temp_config' "$FIX/$fx.xml" | wc -l | tr -d ' ')
+    b=$(grep -o '<temp_config' "$TMP/$fx.out" | wc -l | tr -d ' ')
+    [ "$a" = "$b" ] || { bad "patch-$fx" "temp_config count $a -> $b"; return; }
+    grep -q 'clusterCpu0="[1-9]' "$TMP/$fx.out" && { bad "patch-$fx" "clusterCpu0 not zeroed"; return; }
+  done
+  ok patch-pipeline
+}
+
+t_patch_fails_closed() {
+  # A file with no temp_config must be rejected, not silently accepted.
+  printf '<root><other/></root>\n' > "$TMP/empty.xml"
+  awk -f "$ROOT/scripts/transsion_patch_xml.awk" "$TMP/empty.xml" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 0 ] || { bad fail-closed "patcher accepted a file without temp_config"; return; }
+  ok fail-closed
+}
+
+t_apply_without_patcher() {
+  # If the awk files are missing the script must refuse, not mount garbage.
+  mkdir -p "$TMP/fakebin"
+  cp "$BIN" "$TMP/fakebin/encore_transsion"
+  out=$(TRANS_SION_CONFIG="$TMP/cfg" TRANS_SION_SRC="$FIX/pretty.xml" \
+        MODDIR="$TMP/mod" sh "$TMP/fakebin/encore_transsion" apply --mount-only 2>&1)
+  echo "$out" | grep -q 'patcher missing' || { bad no-patcher "got: $out"; return; }
+  ok no-patcher
+}
+
+t_usage
+t_not_transsion
+t_install_skips_cleanly
+t_status_with_config
+t_preference
+t_boot_honours_preference
+t_patch_pipeline
+t_patch_fails_closed
+t_apply_without_patcher
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

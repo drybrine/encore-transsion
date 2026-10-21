@@ -1,5 +1,13 @@
 # Third Party Notices
 
+## encore-transsion
+
+This is a fork of [Encore Tweaks](https://github.com/Rem01Gaming/encore) by
+Rem01Gaming, modified by drybrine to remove the Transsion (Infinix / Tecno /
+itel) USF skin-thermal CPU cap. Upstream code remains under the Apache License
+2.0, copyright (C) 2024-2026 Rem01Gaming. The Transsion unlock addition is
+copyright (C) 2026 drybrine, also Apache-2.0.
+
 This project, Encore Tweaks, incorporates code from the following open source projects.
 
 ## Apache License 2.0

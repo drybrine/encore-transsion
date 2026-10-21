@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<thermalEngineConfig version="1">
+    <temperature gap="600" vtshell_ntc="1">
+        <temperature_level>
+            <level level="35" temp_min="-50000" temp_max="35999"/>
+            <level level="39" temp_min="39000" temp_max="39999"/>
+            <level level="41" temp_min="41000" temp_max="41999"/>
+        </temperature_level>
+    </temperature>
+    <cpu_level>
+        <level level="1" cluster0_percent="100" cluster1_percent="100" cluster2_percent="100"/>
+        <level level="2" cluster0_percent="95" cluster1_percent="95" cluster2_percent="95"/>
+    </cpu_level>
+    <scenes>
+        <scene sceneName="scene_social">
+            <package name="com.tencent.mm"/>
+            <package name="com.whatsapp"/>
+        </scene>
+    </scenes>
+    <package_items>
+        <package_item name="com.tencent.tmgp.pubgmhdtest2" enable="true" game_mode="common" thermal_scene="scene_game_144" fps="144"/>
+    </package_items>
+    <thermalPolicyConfig cpu_enable="true">
+        <default enable="true">
+            <common_config>
+                <temp_config tempLevel="35" tempLevelClear="0" cpu="0" clusterCpu0="0" clusterCpu1="0" clusterCpu2="0" gpu="0" brightness="0" charge="0" modem="0" disFlashlight="0" stopCameraVideo="0" cameraBrightness="0" disCamera="0" disWifiHotSpot="0" disTorch="0" disWifi="0" fps="0" refreshRate="0" volume="0" disBluetooth="0" disHBMHB="0" isolateCpus="0" powerhal="0"/>
+                <temp_config tempLevel="39" tempLevelClear="2" cpu="0" clusterCpu0="1900000" clusterCpu1="2300000" clusterCpu2="0" gpu="0" brightness="0" charge="0" modem="0" disFlashlight="0" stopCameraVideo="0" cameraBrightness="0" disCamera="0" disWifiHotSpot="0" disTorch="0" disWifi="0" fps="0" refreshRate="0" volume="0" disBluetooth="0" disHBMHB="0" isolateCpus="0" powerhal="0"/>
+                <temp_config tempLevel="41" tempLevelClear="2" cpu="0" clusterCpu0="1800000" clusterCpu1="2200000" clusterCpu2="0" gpu="0" brightness="0" charge="0" modem="0" disFlashlight="0" stopCameraVideo="0" cameraBrightness="0" disCamera="0" disWifiHotSpot="0" disTorch="0" disWifi="0" fps="0" refreshRate="0" volume="0" disBluetooth="0" disHBMHB="0" isolateCpus="0" powerhal="0"/>
+            </common_config>
+        </default>
+    </thermalPolicyConfig>
+    <hotspot_detection enable="false" poll_interval_ms="5000">
+        <hotspot name="wifi" sensor="wifi-ntc"/>
+    </hotspot_detection>
+    <decoy_element cpu="7" note="cpu attribute outside temp_config must NOT be changed"/>
+</thermalEngineConfig>

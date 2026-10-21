@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<thermalEngineConfig version="1">
+  <temperature gap="600" vtshell_ntc="1"/>
+  <cpu_level>
+    <level level="1" cluster0_percent="100" cluster1_percent="100" cluster2_percent="100"/>
+  </cpu_level>
+  <thermalPolicyConfig cpu_enable="true">
+    <default enable="true">
+      <common_config>
+        <temp_config tempLevel="39" tempLevelClear="2" cpu="3" clusterCpu0="1900000"/>
+        <temp_config tempLevel="41" tempLevelClear="2" cpu = "5" clusterCpu0 = "1800000" clusterCpu1="2200000" clusterCpu2="900000"/>
+        <temp_config tempLevel="43" tempLevelClear="2" cpu='2' clusterCpu0='1700000' clusterCpu1='2100000' clusterCpu2='0'/>
+      </common_config>
+    </default>
+  </thermalPolicyConfig>
+  <decoy_element cpu="7"/>
+</thermalEngineConfig>

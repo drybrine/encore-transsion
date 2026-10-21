@@ -149,6 +149,7 @@ ui_print "- Extracting module files"
 extract "$ZIPFILE" 'module.prop' "$MODPATH"
 extract "$ZIPFILE" 'banner.webp' "$MODPATH"
 extract "$ZIPFILE" 'service.sh' "$MODPATH"
+extract "$ZIPFILE" 'post-fs-data.sh' "$MODPATH"
 extract "$ZIPFILE" 'uninstall.sh' "$MODPATH"
 extract "$ZIPFILE" 'action.sh' "$MODPATH"
 extract "$ZIPFILE" 'cleanup.sh' "$MODPATH"
@@ -179,7 +180,7 @@ if [ "$KSU" = "true" ] || [ "$APATCH" = "true" ]; then
 
 	# symlink ourselves on $PATH
 	manager_paths="/data/adb/ap/bin /data/adb/ksu/bin"
-	BIN_PATH="/data/adb/modules/encore/system/bin"
+	BIN_PATH="/data/adb/modules/encore-transsion/system/bin"
 	for dir in $manager_paths; do
 		[ -d "$dir" ] && {
 			ui_print "- Creating symlink in $dir"
@@ -189,6 +190,16 @@ if [ "$KSU" = "true" ] || [ "$APATCH" = "true" ]; then
 		}
 	done
 fi
+
+# Transsion USF CPU cap unlock (Infinix / Tecno / itel)
+ui_print "- Extracting Transsion USF unlock"
+extract "$ZIPFILE" 'system/bin/encore_transsion' "$MODPATH"
+extract "$ZIPFILE" 'system/bin/transsion_patch_xml.awk' "$MODPATH"
+extract "$ZIPFILE" 'system/bin/transsion_verify_xml.awk' "$MODPATH"
+chmod 755 "$MODPATH/system/bin/encore_transsion"
+MODDIR="$MODPATH"
+export MODDIR
+"$MODPATH/system/bin/encore_transsion" install
 
 # Extract webroot
 ui_print "- Extracting webroot"
