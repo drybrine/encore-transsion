@@ -23,6 +23,10 @@ MODDIR=${MODDIR:-/data/adb/modules/encore}
 MODULE_CONFIG=${ENCORE_CONFIG:-/data/adb/.config/encore}
 BIN="$MODDIR/system/bin"
 INTERVAL=${ENCORE_WATCHDOG_INTERVAL:-10}
+# Once the daemon is confirmed healthy, poll less often. A soft reboot is a
+# rare event; 30s to notice it is fine, and it keeps the device out of the way
+# while it idles (notification delivery is the thing users feel).
+IDLE_INTERVAL=${ENCORE_WATCHDOG_IDLE_INTERVAL:-30}
 PIDFILE="$MODULE_CONFIG/.daemon_watchdog.pid"
 # Filesystem root for hardware detection (the host suite overrides this).
 SROOT=${ENCORE_SYSROOT:-}
@@ -59,9 +63,20 @@ trim() {
 	[ -n "$size" ] && [ "$size" -gt 65536 ] && : >"$LOG"
 }
 
-# True when encored is running. argv is NUL-separated, so the NULs become
-# spaces - which leaves a TRAILING space, hence the " *" patterns.
+# True when encored is running.
+#
+# This runs every poll, forever, INCLUDING while the screen is off and the
+# device wants to idle - so it must not fork per process. Scanning /proc/PID/
+# cmdline costs one `tr` per process: ~280 on a PC, several hundred on a phone,
+# i.e. millions of forks a day, all competing with FCM wakeups and idle entry.
+# `pidof` answers the same question with a single call.
+#
+# The /proc scan is kept only as a fallback for builds without pidof.
 daemon_running() {
+	if command -v pidof >/dev/null 2>&1; then
+		pidof encored >/dev/null 2>&1 && return 0
+		return 1
+	fi
 	for d in /proc/[0-9]*; do
 		[ -r "$d/cmdline" ] || continue
 		c=$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null)
@@ -104,6 +119,8 @@ clear_stale_update_marker() {
 		UPDATE_SEEN_AT=""
 		return 0
 	fi
+	# Only pay for stat/boot_epoch when a marker is actually there (the common
+	# case is "no marker": zero forks).
 	bt=$(boot_epoch)
 	mt=$(stat -c %Y "$MODDIR/update" 2>/dev/null)
 	case "$mt" in ''|*[!0-9]*) mt=0 ;; esac
@@ -139,7 +156,10 @@ clear_stale_update_marker() {
 # ("Unknown SoC"). The installer writes it once, so a failed detection at
 # install time sticks forever. Re-detect cheaply.
 repair_soc() {
-	cur=$(cat "$MODULE_CONFIG/soc_recognition" 2>/dev/null)
+	# read builtin, not $(cat ...): this runs every poll, including while the
+	# device is trying to idle.
+	cur=""
+	[ -r "$MODULE_CONFIG/soc_recognition" ] && read -r cur <"$MODULE_CONFIG/soc_recognition"
 	case "$cur" in 1|2|3|4|5|6|7|8) return 0 ;; esac
 
 	# SROOT exists so the host suite can point this at a fake tree.
@@ -202,7 +222,14 @@ while :; do
 		trim
 	fi
 
-	sleep "$INTERVAL"
+	# Poll slowly while everything is healthy, quickly while recovering.
+	if [ -n "$UPDATE_PENDING" ]; then
+		sleep "$INTERVAL"
+	elif daemon_running; then
+		sleep "$IDLE_INTERVAL"
+	else
+		sleep "$INTERVAL"
+	fi
 done
 
 cleanup

@@ -54,6 +54,19 @@ esac
 EOF
   chmod +x "$TMP/mod/system/bin/encored"
 
+  # fake pidof: the fixture daemon is a shell script (comm = "sh"), which the
+  # real pidof would not match. Honour pidof's contract instead - exit 0 with
+  # the pid while the fake daemon is alive.
+  cat > "$TMP/bin/pidof" <<'EOF'
+#!/bin/sh
+[ -f "$FAKE_PIDFILE" ] || exit 1
+p=$(cat "$FAKE_PIDFILE" 2>/dev/null)
+[ -n "$p" ] && [ -d "/proc/$p" ] || exit 1
+echo "$p"
+exit 0
+EOF
+  chmod +x "$TMP/bin/pidof"
+
   # fake getprop: the boot value is baked in, so nothing has to be exported
   {
     printf '#!/bin/sh\n'
@@ -77,6 +90,7 @@ run_watch() { # run_watch <boot:0|1> <seconds>
   MODDIR="$TMP/mod" \
   ENCORE_CONFIG="$TMP/cfg" \
   ENCORE_WATCHDOG_INTERVAL=1 \
+  ENCORE_WATCHDOG_IDLE_INTERVAL=1 \
   ENCORE_UPDATE_GRACE="${ENCORE_UPDATE_GRACE:-90}" \
   ENCORE_SYSROOT="$TMP/root" \
   FAKE_PIDFILE="$TMP/daemon.pid" \
@@ -97,6 +111,20 @@ stop_fake_daemon() {
     sleep 0.2
   fi
   rm -f "$TMP/daemon.pid"
+}
+
+t_uses_pidof() {
+  # A /proc sweep costs one fork per process per poll - millions a day on a
+  # phone, all of it while the device is trying to idle (users feel that as
+  # delayed notifications). pidof must be the primary check.
+  grep -q 'pidof encored' "$WATCH" || { bad uses-pidof "watchdog does not use pidof"; return; }
+  # the sweep may only exist as a fallback
+  line_pidof=$(grep -n 'pidof encored' "$WATCH" | head -n 1 | cut -d: -f1)
+  line_sweep=$(grep -n 'for d in /proc/\[0-9\]\*' "$WATCH" | head -n 1 | cut -d: -f1)
+  [ -n "$line_pidof" ] && [ -n "$line_sweep" ] || { bad uses-pidof "missing either path"; return; }
+  [ "$line_pidof" -lt "$line_sweep" ] \
+    || { bad uses-pidof "the /proc sweep still runs first"; return; }
+  ok uses-pidof
 }
 
 t_starts_daemon() {
@@ -143,7 +171,8 @@ t_stops_when_module_gone() {
   # otherwise it keeps running (and logging) after an uninstall.
   setup 1
   PATH="$TMP/bin:$PATH" MODDIR="$TMP/mod" ENCORE_CONFIG="$TMP/cfg" \
-  ENCORE_WATCHDOG_INTERVAL=1 FAKE_PIDFILE="$TMP/daemon.pid" \
+  ENCORE_WATCHDOG_INTERVAL=1 ENCORE_WATCHDOG_IDLE_INTERVAL=1 \
+  FAKE_PIDFILE="$TMP/daemon.pid" \
     sh "$WATCH" >/dev/null 2>&1 &
   wpid=$!
 
@@ -251,6 +280,7 @@ t_repairs_soc() {
 
     PATH="$TMP/bin:$PATH" MODDIR="$TMP/mod" ENCORE_CONFIG="$TMP/cfg" \
     ENCORE_SYSROOT="$TMP/root" ENCORE_WATCHDOG_INTERVAL=1 \
+    ENCORE_WATCHDOG_IDLE_INTERVAL=1 \
     FAKE_PIDFILE="$TMP/daemon.pid" \
       sh "$WATCH" >/dev/null 2>&1 &
     wpid=$!
@@ -267,7 +297,8 @@ t_repairs_soc() {
   setup 1
   printf '1\n' > "$TMP/cfg/soc_recognition"
   PATH="$TMP/bin:$PATH" MODDIR="$TMP/mod" ENCORE_CONFIG="$TMP/cfg" \
-  ENCORE_SYSROOT="$TMP/root" ENCORE_WATCHDOG_INTERVAL=1 FAKE_PIDFILE="$TMP/daemon.pid" \
+  ENCORE_SYSROOT="$TMP/root" ENCORE_WATCHDOG_INTERVAL=1 \
+  ENCORE_WATCHDOG_IDLE_INTERVAL=1 FAKE_PIDFILE="$TMP/daemon.pid" \
     sh "$WATCH" >/dev/null 2>&1 &
   wpid=$!
   sleep 2
@@ -278,6 +309,7 @@ t_repairs_soc() {
   ok soc-repair
 }
 
+t_uses_pidof
 t_starts_daemon
 t_waits_for_boot
 t_clears_stale_update_marker

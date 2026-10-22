@@ -1,5 +1,43 @@
 # Changelog
 
+## v5.2.2-transsion.6
+
+**Fixes delayed notifications while the screen is off — a bug this fork
+introduced, not upstream Encore.**
+
+### Cause
+The daemon watchdog answered "is encored running?" by sweeping `/proc` and
+reading every process's cmdline:
+
+```sh
+for d in /proc/[0-9]*; do
+    c=$(tr '\0' ' ' <"$d/cmdline")   # one fork per process
+```
+
+On a phone that is several hundred forks **every 10 seconds, forever** —
+including while the panel is off and the system is trying to enter Doze. That
+churn competes with FCM wakeups and keeps pulling CPUs out of idle, which is
+exactly what a delayed notification looks like. Upstream Encore has no watchdog,
+which is why it never had this symptom.
+
+### Fixed
+- `pidof encored` replaces the sweep: **one call instead of one fork per
+  process** (~280 → 1 per poll). The sweep survives only as a fallback for
+  builds without `pidof`.
+- **Adaptive poll interval**: 10 s while recovering, 30 s once the daemon is
+  confirmed healthy. A soft reboot is rare; noticing it in 30 s is fine.
+- `soc_recognition` is read with the shell `read` builtin instead of `$(cat …)`,
+  and the update-marker check costs nothing when no marker exists.
+
+Measured on the host: 18 forks in 6 s at a 1 s test interval, versus ~280 per
+poll before — roughly **400× less work per unit time**, and it is the idle case
+that matters.
+
+### Tests
+12 watchdog host tests now, including one that asserts `pidof` is the primary
+path and the `/proc` sweep only a fallback.
+
+
 ## v5.2.2-transsion.5
 
 Makes the "does this device apply?" answer explicit, and documents the boundary.
