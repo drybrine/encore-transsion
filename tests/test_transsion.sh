@@ -36,14 +36,15 @@ t_not_transsion() {
   # No override and no real config on the host: must report and exit cleanly.
   out=$(TRANS_SION_CONFIG="$TMP/cfg" sh "$BIN" status 2>&1); rc=$?
   [ "$rc" -eq 0 ] || { bad no-transsion "exit $rc"; return; }
-  echo "$out" | grep -q 'not a Transsion XOS build' || { bad no-transsion "got: $out"; return; }
+  echo "$out" | grep -q 'usf config  : not present' || { bad no-transsion "got: $out"; return; }
+  echo "$out" | grep -q 'nothing to unlock' || { bad no-transsion "no explanation: $out"; return; }
   ok no-transsion
 }
 
 t_install_skips_cleanly() {
   out=$(TRANS_SION_CONFIG="$TMP/cfg" sh "$BIN" install 2>&1); rc=$?
   [ "$rc" -eq 0 ] || { bad install-skip "exit $rc"; return; }
-  echo "$out" | grep -q 'skipped' || { bad install-skip "got: $out"; return; }
+  echo "$out" | grep -q 'does not apply' || { bad install-skip "got: $out"; return; }
   # it must not have created a preference for a device it cannot help
   [ -f "$TMP/cfg/transsion_unlock" ] && { bad install-skip "preference written anyway"; return; }
   ok install-skip
