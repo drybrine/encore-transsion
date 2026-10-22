@@ -77,6 +77,8 @@ run_watch() { # run_watch <boot:0|1> <seconds>
   MODDIR="$TMP/mod" \
   ENCORE_CONFIG="$TMP/cfg" \
   ENCORE_WATCHDOG_INTERVAL=1 \
+  ENCORE_UPDATE_GRACE="${ENCORE_UPDATE_GRACE:-90}" \
+  ENCORE_SYSROOT="$TMP/root" \
   FAKE_PIDFILE="$TMP/daemon.pid" \
     sh "$WATCH" >/dev/null 2>&1 &
   wpid=$!
@@ -194,8 +196,94 @@ t_replaces_stale_pidfile() {
   ok stale-pid
 }
 
+t_clears_stale_update_marker() {
+  # encored exits WITHOUT logging when <module>/update exists. A marker older
+  # than the current boot is stale (the update already merged) and must be
+  # removed, or the daemon never runs again.
+  setup 1
+  : > "$TMP/mod/update"
+  # backdate it well before this boot
+  touch -d "2020-01-01 00:00:00" "$TMP/mod/update" 2>/dev/null || touch -t 202001010000 "$TMP/mod/update"
+  out=$(run_watch 1 4)
+  [ -e "$TMP/mod/update" ] && { bad stale-marker "marker survived: $out"; return; }
+  echo "$out" | grep -q 'stale update marker' || { bad stale-marker "not logged: $out"; return; }
+  echo "$out" | grep -q 'encored started' || { bad stale-marker "daemon did not start after cleanup: $out"; return; }
+  ok stale-marker
+}
+
+t_keeps_fresh_update_marker() {
+  # a marker created AFTER this boot means an update really is pending: honour
+  # it during the grace period instead of deleting it immediately
+  setup 1
+  : > "$TMP/mod/update"      # mtime = now, i.e. newer than the boot
+  out=$(ENCORE_UPDATE_GRACE=600 run_watch 1 4)
+  [ -e "$TMP/mod/update" ] || { bad fresh-marker "removed a pending-update marker"; return; }
+  echo "$out" | grep -q 'pending module update' || { bad fresh-marker "not logged: $out"; return; }
+  echo "$out" | grep -q 'encored started' && { bad fresh-marker "started despite a pending update"; return; }
+  ok fresh-marker
+}
+
+t_update_marker_grace_expires() {
+  # ... but a marker that outlives the grace period is stuck, and the daemon
+  # must not stay dead forever because a manager forgot to clean up
+  setup 1
+  : > "$TMP/mod/update"
+  out=$(ENCORE_UPDATE_GRACE=1 run_watch 1 5)
+  [ -e "$TMP/mod/update" ] && { bad grace "stuck marker never cleared: $out"; return; }
+  echo "$out" | grep -q 'grace period' || { bad grace "not logged: $out"; return; }
+  echo "$out" | grep -q 'encored started' || { bad grace "daemon did not start: $out"; return; }
+  ok grace
+}
+
+t_repairs_soc() {
+  # soc_recognition 0 makes Encore skip most tweaks ("Unknown SoC"). The
+  # installer writes it once, so a failed detection at install time sticks.
+  # Each case: fake sysfs tree + expected code.
+  for case in "mtk:1" "qcom:2" "unknown:0"; do
+    want=${case##*:}; kind=${case%%:*}
+    setup 1
+    rm -rf "$TMP/root"
+    case "$kind" in
+    mtk)   mkdir -p "$TMP/root/sys/kernel/ged/hal" ;;
+    qcom)  mkdir -p "$TMP/root/sys/class/kgsl/kgsl-3d0/devfreq" ;;
+    esac
+    printf '0\n' > "$TMP/cfg/soc_recognition"
+
+    PATH="$TMP/bin:$PATH" MODDIR="$TMP/mod" ENCORE_CONFIG="$TMP/cfg" \
+    ENCORE_SYSROOT="$TMP/root" ENCORE_WATCHDOG_INTERVAL=1 \
+    FAKE_PIDFILE="$TMP/daemon.pid" \
+      sh "$WATCH" >/dev/null 2>&1 &
+    wpid=$!
+    sleep 2
+    kill "$wpid" 2>/dev/null
+    wait "$wpid" 2>/dev/null
+    stop_fake_daemon
+
+    got=$(cat "$TMP/cfg/soc_recognition" 2>/dev/null)
+    [ "$got" = "$want" ] || { bad "soc-$kind" "got '$got', want '$want'"; return; }
+  done
+
+  # a valid code must be left alone
+  setup 1
+  printf '1\n' > "$TMP/cfg/soc_recognition"
+  PATH="$TMP/bin:$PATH" MODDIR="$TMP/mod" ENCORE_CONFIG="$TMP/cfg" \
+  ENCORE_SYSROOT="$TMP/root" ENCORE_WATCHDOG_INTERVAL=1 FAKE_PIDFILE="$TMP/daemon.pid" \
+    sh "$WATCH" >/dev/null 2>&1 &
+  wpid=$!
+  sleep 2
+  kill "$wpid" 2>/dev/null
+  wait "$wpid" 2>/dev/null
+  stop_fake_daemon
+  [ "$(cat "$TMP/cfg/soc_recognition")" = "1" ] || { bad soc-keep "overwrote a valid code"; return; }
+  ok soc-repair
+}
+
 t_starts_daemon
 t_waits_for_boot
+t_clears_stale_update_marker
+t_keeps_fresh_update_marker
+t_update_marker_grace_expires
+t_repairs_soc
 t_no_double_start
 t_respects_disable
 t_stops_when_module_gone

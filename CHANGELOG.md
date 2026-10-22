@@ -1,5 +1,51 @@
 # Changelog
 
+## v5.2.2-transsion.3
+
+Diagnosed from a bug report whose `encore.log` contained **only the export
+header** — no daemon lines at all.
+
+### Why the log was empty
+`encored` has three preconditions, and exactly one of them exits **without
+logging**:
+
+```c
+if (access(MODULE_UPDATE, F_OK) == 0) {      // /data/adb/modules/<id>/update
+    notify("Please reboot your device to complete module update.");
+    return EXIT_FAILURE;                      // no LOGC -> empty log
+}
+```
+
+The gamelist and device-mitigation failures all call `LOGC`, so they would have
+left lines behind. An empty log therefore means the **update marker** was
+present. The watchdog now handles it:
+
+- A marker created **before** this boot is stale (the update already merged,
+  nothing cleaned up) → removed, daemon starts.
+- A marker created **during** this boot is honoured for a 90 s grace period
+  (`ENCORE_UPDATE_GRACE`), then removed so a manager that forgets to clean up
+  cannot keep the daemon dead forever.
+
+### Also fixed
+- **"Unknown SoC"**: `soc_recognition` was `0`, which makes Encore skip most of
+  its tweaks. The installer writes that value once, so a failed detection at
+  install time sticks forever. The watchdog re-detects it (`/sys` markers, then
+  `ro.board.platform`) and repairs the file.
+- **New `doctor` command** — prints the daemon state, every precondition
+  encored checks, the soc code, the tails of both logs, and the USF cap state,
+  so a silent failure is visible in one command:
+
+```sh
+su -c '/data/adb/modules/encore/system/bin/encore_transsion doctor'
+```
+
+### Tests
+`tests/test_daemon_watch.sh` is now 11 host tests: start, boot gate, stale
+marker, pending marker, grace expiry, SoC repair (three sysfs shapes plus "leave
+a valid code alone"), no double start, disable (file and dir), self-exit on
+module removal, single instance, stale pidfile.
+
+
 ## v5.2.2-transsion.2
 
 Fixes the daemon not coming back after a soft reboot, and the module id that

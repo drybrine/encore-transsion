@@ -379,6 +379,77 @@ do_boot() {
 	fi
 }
 
+# One command that answers "why is the daemon not running". Every precondition
+# encored checks is printed with its verdict, so a silent failure (encored
+# exits without logging when the update marker is present) is visible.
+do_doctor() {
+	MD=${MODDIR:-/data/adb/modules/encore}
+	CFG=$MODULE_CONFIG
+	ui "encore-transsion doctor"
+	ui "module dir  : $MD"
+	ui ""
+
+	ui "[daemon]"
+	found=0
+	for d in /proc/[0-9]*; do
+		[ -r "$d/cmdline" ] || continue
+		c=$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null)
+		case "$c" in
+		encored | encored\ * | */encored | */encored\ *)
+			ui "  encored      : running (pid ${d#/proc/})"
+			found=1
+			;;
+		esac
+	done
+	[ "$found" = 0 ] && ui "  encored      : NOT running"
+
+	wpid=""
+	rd "$CFG/.daemon_watchdog.pid" && wpid=$RF
+	if [ -n "$wpid" ] && [ -d "/proc/$wpid" ]; then
+		ui "  watchdog     : running (pid $wpid)"
+	else
+		ui "  watchdog     : NOT running"
+	fi
+	ui "  boot done    : $(getprop sys.boot_completed 2>/dev/null | head -n 1)"
+	ui ""
+
+	ui "[preconditions encored checks]"
+	if [ -e "$MD/update" ]; then
+		ui "  update marker: PRESENT ($MD/update) <- encored exits immediately"
+		ui "                 (created before this boot = stale; the watchdog removes it)"
+	else
+		ui "  update marker: absent (ok)"
+	fi
+	if [ -f "$CFG/gamelist.json" ]; then
+		ui "  gamelist.json: present"
+	else
+		ui "  gamelist.json: MISSING <- encored exits"
+	fi
+	if [ -f "$CFG/device_mitigation.json" ]; then
+		ui "  mitigation   : present"
+	else
+		ui "  mitigation   : MISSING <- encored exits"
+	fi
+	soc=""
+	rd "$CFG/soc_recognition" && soc=$RF
+	ui "  soc code     : ${soc:-missing}  (1=MTK 2=QCOM 3=Exynos; 0/missing = most tweaks skipped)"
+	ui ""
+
+	ui "[logs]"
+	for f in encore.log daemon_watchdog.log; do
+		if [ -f "$CFG/$f" ]; then
+			ui "  $f: $(wc -l <"$CFG/$f" 2>/dev/null | tr -d ' ') line(s), last:"
+			tail -n 5 "$CFG/$f" 2>/dev/null | sed 's/^/    /'
+		else
+			ui "  $f: absent"
+		fi
+	done
+	ui ""
+
+	ui "[usf cpu cap]"
+	do_status | sed 's/^/  /'
+}
+
 do_install() {
 	# Installer entry point: mount only, no USF restart (the user reboots after
 	# installing, and USF reads its config during that boot).
@@ -401,12 +472,13 @@ restore) do_restore ;;
 enable) do_enable ;;
 disable) do_disable ;;
 install) do_install ;;
+doctor) do_doctor ;;
 boot)
 	shift
 	do_boot "$@"
 	;;
 *)
-	ui "usage: $0 {status|apply [--mount-only]|restore|enable|disable|install|boot [--restart]}"
+	ui "usage: $0 {status|apply [--mount-only]|restore|enable|disable|install|boot [--restart]|doctor}"
 	exit 2
 	;;
 esac
