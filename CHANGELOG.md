@@ -1,5 +1,28 @@
 # Changelog
 
+## v5.2.2-transsion.7
+
+**The watchdog no longer stays resident.** It runs once at boot, starts
+`encored`, and exits. Nothing is left running in the background.
+
+- `--once` is now the default (and what `post-fs-data.sh` / `service.sh` call):
+  wait for `boot_completed` (bounded at 180 s), repair what blocks the daemon,
+  start it, exit.
+- `--loop` still exists as an opt-in for people who soft-reboot often and would
+  rather keep a process than tap a button.
+
+### What that costs
+A soft reboot restarts the framework **without running any module script**, so
+`encored` dies and nothing brings it back by itself. One command restores it:
+
+```sh
+su -c '/data/adb/modules/encore/system/bin/encore_transsion start'
+```
+
+A full reboot stays fully automatic. That trade is deliberate: no background
+process is worth the convenience of covering a rare event.
+
+
 ## v5.2.2-transsion.6
 
 **Fixes delayed notifications while the screen is off — a bug this fork

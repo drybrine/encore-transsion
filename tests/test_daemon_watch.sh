@@ -94,7 +94,7 @@ run_watch() { # run_watch <boot:0|1> <seconds>
   ENCORE_UPDATE_GRACE="${ENCORE_UPDATE_GRACE:-90}" \
   ENCORE_SYSROOT="$TMP/root" \
   FAKE_PIDFILE="$TMP/daemon.pid" \
-    sh "$WATCH" >/dev/null 2>&1 &
+    sh "$WATCH" --loop >/dev/null 2>&1 &
   wpid=$!
   sleep "$2"
   kill "$wpid" 2>/dev/null
@@ -111,6 +111,53 @@ stop_fake_daemon() {
     sleep 0.2
   fi
   rm -f "$TMP/daemon.pid"
+}
+
+t_once_mode_exits() {
+  # The default must be one-shot: start the daemon, then exit. A module should
+  # not leave a background process behind just to babysit another one.
+  setup 1
+  : > "$TMP/cfg/daemon_watchdog.log"
+  PATH="$TMP/bin:$PATH" MODDIR="$TMP/mod" ENCORE_CONFIG="$TMP/cfg" \
+  ENCORE_WATCHDOG_INTERVAL=1 ENCORE_WATCHDOG_IDLE_INTERVAL=1 \
+  FAKE_PIDFILE="$TMP/daemon.pid" \
+    timeout 30 sh "$WATCH" --once >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -eq 0 ] || { bad once "exit $rc"; return; }
+  [ -f "$TMP/cfg/.daemon_watchdog.pid" ] && { bad once "left a pidfile behind"; return; }
+  out=$(cat "$TMP/cfg/daemon_watchdog.log" 2>/dev/null)
+  echo "$out" | grep -q 'encored started' || { bad once "daemon not started: $out"; return; }
+  stop_fake_daemon
+  ok once-exits
+}
+
+t_once_is_default() {
+  # no argument == --once, and the script must terminate on its own
+  setup 1
+  PATH="$TMP/bin:$PATH" MODDIR="$TMP/mod" ENCORE_CONFIG="$TMP/cfg" \
+  FAKE_PIDFILE="$TMP/daemon.pid" \
+    timeout 30 sh "$WATCH" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -eq 0 ] || { bad once-default "exit $rc (did not terminate?)"; return; }
+  stop_fake_daemon
+  ok once-default
+}
+
+t_loop_mode_still_available() {
+  # opt-in resident mode must still work for people who want it
+  setup 1
+  PATH="$TMP/bin:$PATH" MODDIR="$TMP/mod" ENCORE_CONFIG="$TMP/cfg" \
+  ENCORE_WATCHDOG_INTERVAL=1 ENCORE_WATCHDOG_IDLE_INTERVAL=1 \
+  FAKE_PIDFILE="$TMP/daemon.pid" \
+    sh "$WATCH" --loop >/dev/null 2>&1 &
+  wpid=$!
+  sleep 2
+  [ -d "/proc/$wpid" ] || { bad loop "loop mode exited immediately"; return; }
+  [ -f "$TMP/cfg/.daemon_watchdog.pid" ] || { bad loop "no pidfile in loop mode"; return; }
+  kill "$wpid" 2>/dev/null
+  wait "$wpid" 2>/dev/null
+  stop_fake_daemon
+  ok loop-mode
 }
 
 t_uses_pidof() {
@@ -310,6 +357,9 @@ t_repairs_soc() {
 }
 
 t_uses_pidof
+t_once_mode_exits
+t_once_is_default
+t_loop_mode_still_available
 t_starts_daemon
 t_waits_for_boot
 t_clears_stale_update_marker

@@ -499,6 +499,26 @@ do_doctor() {
 	do_status | sed 's/^/  /'
 }
 
+# Bring encored up without rebooting. This is the one command needed after a
+# soft reboot (which runs no module script) - or after anything that killed the
+# daemon.
+do_start() {
+	MD=${MODDIR:-/data/adb/modules/encore}
+	W="$MD/system/bin/encore_daemon_watch"
+	if [ ! -x "$W" ]; then
+		ui "ERROR: $W not found"
+		return 1
+	fi
+	MODDIR="$MD" "$W" --once
+	rc=$?
+	if [ "$rc" -eq 0 ]; then
+		ui "encored is running"
+	else
+		ui "encored is NOT running - run 'doctor' for the reason"
+	fi
+	return $rc
+}
+
 do_install() {
 	# Installer entry point: mount only, no USF restart (the user reboots after
 	# installing, and USF reads its config during that boot).
@@ -529,12 +549,13 @@ enable) do_enable ;;
 disable) do_disable ;;
 install) do_install ;;
 doctor) do_doctor ;;
+start) do_start ;;
 boot)
 	shift
 	do_boot "$@"
 	;;
 *)
-	ui "usage: $0 {status|apply [--mount-only]|restore|enable|disable|install|boot [--restart]|doctor}"
+	ui "usage: $0 {status|apply [--mount-only]|restore|enable|disable|install|boot [--restart]|doctor|start}"
 	exit 2
 	;;
 esac

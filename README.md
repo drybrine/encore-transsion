@@ -56,6 +56,19 @@ GPU, FPS — and every kernel thermal zone, trip point and junction protection
 stays stock. The device **can run hotter** under sustained load; watch your
 temperatures.
 
+### Starting the daemon after a soft reboot
+
+The module starts `encored` once at boot and exits — no background process. A
+soft reboot runs no module script, so the daemon dies with the framework:
+
+```sh
+su -c '/data/adb/modules/encore/system/bin/encore_transsion start'
+```
+
+A full reboot is automatic. If you soft-reboot often and want it handled for
+you, run the watchdog in resident mode instead
+(`encore_daemon_watch --loop`).
+
 ### Controlling it
 
 There is no WebUI change in this fork — the WebUI is upstream, untouched. The

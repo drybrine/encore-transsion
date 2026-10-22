@@ -3,7 +3,19 @@
 # Copyright (C) 2026 drybrine
 # Licensed under the Apache License, Version 2.0 (see LICENSE)
 #
-# Keeps `encored` alive.
+# Makes sure `encored` is running. Two modes:
+#
+#   --once   (default) ensure it is up, then EXIT. No resident process.
+#   --loop   stay resident and restart it whenever it dies.
+#
+# The default is --once: a module should not leave a background process behind
+# just to babysit another one. What that costs: a soft reboot restarts the
+# framework without running any module script, so encored dies and nothing
+# brings it back - run `encore_transsion start` (or the manager Action button)
+# once afterwards. A full reboot is fully automatic.
+#
+# --loop exists for people who soft-reboot often and prefer the convenience over
+# having a process around.
 #
 # Why: the daemon is started by service.sh, which runs once at boot. A *soft*
 # reboot restarts the framework but re-runs no module script, so the daemon
@@ -37,9 +49,20 @@ log() {
 	printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG" 2>/dev/null
 }
 
-# Single instance. The pid file is only trusted after its cmdline is checked:
-# a recycled PID must never make us think a watchdog is already running.
-if [ -r "$PIDFILE" ]; then
+MODE="once"
+case "${1:-}" in
+--loop) MODE="loop" ;;
+--once | "") MODE="once" ;;
+*)
+	printf 'usage: %s [--once|--loop]\n' "$0" >&2
+	exit 2
+	;;
+esac
+
+# Single instance - only meaningful in loop mode. The pid file is only trusted
+# after its cmdline is checked: a recycled PID must never make us think a
+# watchdog is already running.
+if [ "$MODE" = "loop" ] && [ -r "$PIDFILE" ]; then
 	old=$(cat "$PIDFILE" 2>/dev/null)
 	if [ -n "$old" ] && [ -d "/proc/$old" ]; then
 		case "$(tr '\0' ' ' <"/proc/$old/cmdline" 2>/dev/null)" in
@@ -47,10 +70,12 @@ if [ -r "$PIDFILE" ]; then
 		esac
 	fi
 fi
-mkdir -p "$MODULE_CONFIG" 2>/dev/null
-printf '%s\n' "$$" >"$PIDFILE"
+if [ "$MODE" = "loop" ]; then
+	mkdir -p "$MODULE_CONFIG" 2>/dev/null
+	printf '%s\n' "$$" >"$PIDFILE"
+fi
 
-cleanup() { rm -f "$PIDFILE" 2>/dev/null; }
+cleanup() { [ "$MODE" = "loop" ] && rm -f "$PIDFILE" 2>/dev/null; return 0; }
 # A TERM must actually end the loop - a trap that only cleans up would make
 # the watchdog unkillable (and `timeout` would never return).
 trap 'cleanup; exit 0' INT TERM
@@ -186,42 +211,71 @@ repair_soc() {
 	fi
 }
 
-while :; do
-	# Stop conditions, checked every poll so a disable takes effect quickly.
-	[ -d "$MODDIR" ] || break          # module removed
-	[ -e "$MODDIR/disable" ] && break  # module disabled (file or dir)
-	[ -x "$BIN/encored" ] || break
-
-	# encored refuses to run until boot completed (it needs the framework).
-	if [ -z "$(getprop sys.boot_completed 2>/dev/null)" ]; then
-		sleep 5
-		continue
-	fi
+# ---------------------------------------------------------------------------
+# One pass: clear what blocks encored, then start it if it is down.
+# Returns 0 when the daemon is up afterwards.
+# ---------------------------------------------------------------------------
+pass_once() {
+	[ -d "$MODDIR" ] || return 1          # module removed
+	[ -e "$MODDIR/disable" ] && return 1  # module disabled (file or dir)
+	[ -x "$BIN/encored" ] || return 1
+	# encored needs the framework: never start it before boot_completed.
+	[ -n "$(getprop sys.boot_completed 2>/dev/null)" ] || return 1
 
 	clear_stale_update_marker
 	repair_soc
+	# A genuinely pending update blocks encored by design; nothing to do.
+	[ -n "$UPDATE_PENDING" ] && return 1
 
-	if [ -n "$UPDATE_PENDING" ]; then
-		sleep "$INTERVAL"
-		continue
+	if daemon_running; then
+		return 0
 	fi
 
-	if ! daemon_running; then
-		# Missing gamelist is fatal for encored; regenerate it if it vanished.
-		if [ ! -f "$MODULE_CONFIG/gamelist.json" ] && [ -x "$BIN/encored" ]; then
-			"$BIN/encored" setup_gamelist "$MODULE_CONFIG/gamelist.json" >/dev/null 2>&1
-		fi
-		log "encored not running; starting it"
-		"$BIN/encored" daemon >>"$MODULE_CONFIG/encore.log" 2>&1
-		sleep 3
-		if daemon_running; then
-			log "encored started"
-		else
-			log "WARN: encored exited immediately (see encore.log)"
-		fi
-		trim
+	# Missing gamelist is fatal for encored; regenerate it if it vanished.
+	if [ ! -f "$MODULE_CONFIG/gamelist.json" ] && [ -x "$BIN/encored" ]; then
+		"$BIN/encored" setup_gamelist "$MODULE_CONFIG/gamelist.json" >/dev/null 2>&1
 	fi
+	log "encored not running; starting it"
+	"$BIN/encored" daemon >>"$MODULE_CONFIG/encore.log" 2>&1
+	sleep 3
+	if daemon_running; then
+		log "encored started"
+		return 0
+	fi
+	log "WARN: encored exited immediately (see encore.log)"
+	return 1
+}
 
+# Wait for boot_completed, bounded: this may run from post-fs-data, before the
+# framework is up. Returns 0 once booted, 1 on timeout.
+wait_boot() {
+	limit=${1:-180}
+	i=0
+	while [ -z "$(getprop sys.boot_completed 2>/dev/null)" ]; do
+		[ "$i" -ge "$limit" ] && return 1
+		sleep 5
+		i=$((i + 5))
+	done
+	return 0
+}
+
+if [ "$MODE" = "once" ]; then
+	# The common case: start it, get out of the way, leave no process behind.
+	if ! wait_boot 180; then
+		log "boot_completed did not arrive within 180s; not starting encored"
+		cleanup
+		exit 1
+	fi
+	pass_once
+	rc=$?
+	trim
+	cleanup
+	exit $rc
+fi
+
+# --loop: resident mode, opt-in.
+while :; do
+	pass_once
 	# Poll slowly while everything is healthy, quickly while recovering.
 	if [ -n "$UPDATE_PENDING" ]; then
 		sleep "$INTERVAL"
