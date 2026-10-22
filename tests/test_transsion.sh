@@ -127,6 +127,37 @@ t_patch_fails_closed() {
   ok fail-closed
 }
 
+t_rom_detection() {
+  # USF only ships on Transsion's own builds. Naming the ROM is the difference
+  # between "unsupported device" and "you are on a custom ROM".
+  for pair in "Infinix/X6879:16/x:user|XOS" "TECNO/CK8n:14/x:user|HiOS" \
+              "itel/S666LN:13/x:user|itelOS" "LineageOS/lineage_x:16/x:user|custom ROM"; do
+    fp=${pair%%|*}; want=${pair##*|}
+    got=$(sh -c 'getprop() { case "$1" in ro.build.fingerprint) echo "'"$fp"'" ;; esac; }; '"$(sed -n '/^rom_name()/,/^}/p' "$ROOT/scripts/encore_transsion.sh")"'; rom_name' 2>&1)
+    case "$got" in
+    "$want"*) : ;;
+    *) bad "rom-$want" "fingerprint '$fp' -> '$got', want '$want'"; return ;;
+    esac
+  done
+  ok rom-detection
+}
+
+t_no_usf_is_noop() {
+  # Stock -> custom ROM: the preference is still "enabled" but USF is gone.
+  # boot must do nothing at all (no mount, no lock, no error).
+  rm -rf "$TMP/cfg"; mkdir -p "$TMP/cfg"
+  printf '1\n' > "$TMP/cfg/transsion_unlock"
+  out=$(TRANS_SION_CONFIG="$TMP/cfg" MODDIR="$TMP/modfb" \
+        TRANS_SION_SRC="" sh "$BIN" boot 2>&1); rc=$?
+  [ "$rc" -eq 0 ] || { bad no-usf "boot exited $rc"; return; }
+  [ -d "$TMP/modfb" ] && { bad no-usf "boot created state for a device it cannot help"; return; }
+  echo "$out" | grep -qi 'error' && { bad no-usf "boot errored: $out"; return; }
+  # and status must explain why, not just say "unknown"
+  out=$(TRANS_SION_CONFIG="$TMP/cfg" MODDIR="$TMP/modfb" sh "$BIN" status 2>&1)
+  echo "$out" | grep -q 'nothing to unlock' || { bad no-usf "status does not explain: $out"; return; }
+  ok no-usf-noop
+}
+
 t_profiler_soc_fallback() {
   # A missing soc_recognition must not silently disable every SoC tweak.
   # The profiler is upstream's; this asserts the fallback we added.
@@ -162,6 +193,8 @@ t_patch_pipeline
 t_extra_clusters
 t_verifier_catches_leftover_cluster
 t_patch_fails_closed
+t_rom_detection
+t_no_usf_is_noop
 t_profiler_soc_fallback
 t_apply_without_patcher
 

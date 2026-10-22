@@ -108,6 +108,47 @@ rd() {
 
 is_mounted() { cut -d' ' -f2 /proc/mounts 2>/dev/null | grep -qxF "$1"; }
 
+# Name the ROM. USF only ships on Transsion's own builds - XOS (Infinix),
+# HiOS (Tecno) and itelOS (itel) - so on an AOSP/LineageOS port of the same
+# phone there is no USF and nothing to unlock. Saying which case applies is the
+# difference between "your device is unsupported" and "you are on a custom ROM".
+rom_name() {
+	fp=$(getprop ro.build.fingerprint 2>/dev/null)
+	disp=$(getprop ro.build.display.id 2>/dev/null)
+	inc=$(getprop ro.build.version.incremental 2>/dev/null)
+	all="$fp $disp $inc"
+
+	case "$all" in
+	*Infinix* | *XOS* | *xos*) printf 'XOS (Infinix)' ;;
+	*TECNO* | *Tecno* | *HiOS* | *hios*) printf 'HiOS (Tecno)' ;;
+	*itel* | *ItelOS*) printf 'itelOS (itel)' ;;
+	*)
+		# No Transsion marker: a custom ROM, or a Transsion device whose props
+		# were replaced by the port.
+		case "$all" in
+		*AOSP* | *aosp* | *Lineage* | *lineage* | *Pixel* | *Evolution* | *crDroid*) printf 'custom ROM (AOSP-based)' ;;
+		*) printf 'unknown' ;;
+		esac
+		;;
+	esac
+}
+
+# Does the USF package exist on this build? Cheap check, no pm spawn unless the
+# file-based check is inconclusive.
+usf_installed() {
+	for d in /proc/[0-9]*; do
+		[ -r "$d/cmdline" ] || continue
+		c=$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null)
+		case "$c" in com.transsion.usf | com.transsion.usf\ *) return 0 ;; esac
+	done
+	for p in /system/app/*Usf* /system/priv-app/*Usf* /system_ext/app/*Usf* \
+	         /system_ext/priv-app/*Usf* /product/app/*Usf* /product/priv-app/*Usf* \
+	         /product/app/*TranUsf* /system_ext/app/*TranUsf*; do
+		[ -e "$p" ] && return 0
+	done
+	return 1
+}
+
 # PIDs whose cmdline is exactly the USF package (no wildcard matching).
 usf_pids() {
 	for d in /proc/[0-9]*; do
@@ -197,7 +238,7 @@ engine_state() {
 apply_locked() { # apply_locked [--mount-only]
 	trim_log
 	if [ -z "$SRC" ]; then
-		log "ERROR: tran_thermal.xml not found (this is not a Transsion XOS build)"
+		log "ERROR: tran_thermal.xml not found - ROM: $(rom_name); USF cap unlock does not apply here"
 		return 1
 	fi
 	if is_mounted "$SRC"; then
@@ -326,9 +367,16 @@ do_restore() {
 
 do_status() {
 	ui "encore-transsion"
+	ui "rom         : $(rom_name)"
 	if [ -z "$SRC" ]; then
-		ui "device      : not a Transsion XOS build (no tran_thermal.xml)"
-		ui "state       : nothing to do"
+		ui "usf config  : not present"
+		if usf_installed; then
+			ui "usf app     : present, but its thermal config is missing"
+			ui "state       : cannot patch this build (unexpected layout)"
+		else
+			ui "usf app     : absent"
+			ui "state       : nothing to unlock - USF only ships on XOS / HiOS / itelOS"
+		fi
 		return 0
 	fi
 	ui "config      : $SRC"
@@ -387,6 +435,7 @@ do_doctor() {
 	CFG=$MODULE_CONFIG
 	ui "encore-transsion doctor"
 	ui "module dir  : $MD"
+	ui "rom         : $(rom_name)"
 	ui ""
 
 	ui "[daemon]"
@@ -454,7 +503,14 @@ do_install() {
 	# Installer entry point: mount only, no USF restart (the user reboots after
 	# installing, and USF reads its config during that boot).
 	if [ -z "$SRC" ]; then
-		ui "- Not a Transsion device: USF CPU cap unlock skipped"
+		if usf_installed; then
+			ui "- USF is installed but its thermal config was not found: unlock skipped"
+			ui "  (unexpected layout - please report it)"
+		else
+			ui "- ROM: $(rom_name)"
+			ui "- No Transsion USF on this build: the CPU cap unlock does not apply"
+			ui "  (USF only ships on XOS, HiOS and itelOS - not on custom ROMs)"
+		fi
 		return 0
 	fi
 	set_pref 1

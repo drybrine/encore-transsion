@@ -1,5 +1,28 @@
 # Changelog
 
+## v5.2.2-transsion.5
+
+Makes the "does this device apply?" answer explicit, and documents the boundary.
+
+- **ROM is named, not guessed at.** `status` / `doctor` / `install` now report
+  `XOS (Infinix)`, `HiOS (Tecno)`, `itelOS (itel)` or `custom ROM (AOSP-based)`
+  from `ro.build.fingerprint` / `ro.build.display.id`.
+- **Two different failures are no longer the same message.** A build with no
+  USF config is now distinguished from a Transsion build whose config is
+  missing: the first says "nothing to unlock — USF only ships on XOS / HiOS /
+  itelOS", the second says "USF is installed but its thermal config was not
+  found (unexpected layout — please report it)".
+- **The fallback is a verified no-op.** On a custom ROM there is no USF, so the
+  preference stays enabled but `boot` does nothing: no mount, no lock file, no
+  error. The rest of Encore runs exactly as upstream — and on a custom ROM there
+  is no USF clamp to fight anyway, which is why the unlock is not needed there.
+
+### Scope
+This unlock is for **stock Transsion builds** — XOS (Infinix), HiOS (Tecno),
+itelOS (itel). On any other ROM it is inert by design; Encore's own tweaks are
+what run, unmodified.
+
+
 ## v5.2.2-transsion.4
 
 Portability pass: make the unlock work on other Transsion devices, not just the
