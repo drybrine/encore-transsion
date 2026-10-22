@@ -24,8 +24,26 @@
 # Config dir
 MODULE_CONFIG="/data/adb/.config/encore"
 
-# SoC recognition
-SOC=$(<$MODULE_CONFIG/soc_recognition)
+# SoC recognition. Never let a missing/unreadable file silently disable every
+# SoC-specific tweak (that is exactly what "Unknown SoC" looked like): fall back
+# to detection from ro.board.platform, then to MediaTek for Transsion builds.
+SOC=""
+[ -r "$MODULE_CONFIG/soc_recognition" ] && read -r SOC <"$MODULE_CONFIG/soc_recognition"
+case "$SOC" in
+1 | 2 | 3 | 4 | 5 | 6 | 7 | 8) ;;
+*)
+	SOC=""
+	case "$(getprop ro.board.platform 2>/dev/null)" in
+	mt* | MT*) SOC=1 ;;
+	sm* | qcom* | SM* | QCOM*) SOC=2 ;;
+	exynos* | universal* | s5e*) SOC=3 ;;
+	ums* | sp* | SC*) SOC=4 ;;
+	gs* | tensor*) SOC=5 ;;
+	kirin*) SOC=7 ;;
+	esac
+	[ -z "$SOC" ] && SOC=1   # Transsion ships MediaTek; better than no tweaks
+	;;
+esac
 
 # Default CPU Governor
 DEFAULT_CPU_GOV="$ENCORE_BALANCED_CPUGOV"
@@ -83,7 +101,8 @@ which_midfreq() {
 # Returns OPP index of the frequency
 
 mtk_gpufreq_minfreq_index() {
-	awk -F'[][]' '{print $2}' "$1" | tail -n 1
+	[ -r "$1" ] || return 0
+	awk -F'[][]' '{print $2}' "$1" 2>/dev/null | tail -n 1
 }
 
 mtk_gpufreq_midfreq_index() {
@@ -261,7 +280,9 @@ mediatek_performance() {
 		if [ -d /proc/gpufreqv2 ]; then
 			apply 0 /proc/gpufreqv2/fix_target_opp_index
 		else
-			gpu_freq=$(sed -n 's/.*freq = \([0-9]\{1,\}\).*/\1/p' /proc/gpufreq/gpufreq_opp_dump | head -n 1)
+			gpu_freq=""
+			[ -r /proc/gpufreq/gpufreq_opp_dump ] && \
+				gpu_freq=$(sed -n 's/.*freq = \([0-9]\{1,\}\).*/\1/p' /proc/gpufreq/gpufreq_opp_dump 2>/dev/null | head -n 1)
 			apply "$gpu_freq" /proc/gpufreq/gpufreq_opp_freq
 		fi
 	}
@@ -624,7 +645,9 @@ mediatek_powersave() {
 		min_gpufreq_index=$(mtk_gpufreq_minfreq_index /proc/gpufreqv2/gpu_working_opp_table)
 		apply "$min_gpufreq_index" /proc/gpufreqv2/fix_target_opp_index
 	else
-		gpu_freq=$(sed -n 's/.*freq = \([0-9]\{1,\}\).*/\1/p' /proc/gpufreq/gpufreq_opp_dump | tail -n 1)
+		gpu_freq=""
+		[ -r /proc/gpufreq/gpufreq_opp_dump ] && \
+			gpu_freq=$(sed -n 's/.*freq = \([0-9]\{1,\}\).*/\1/p' /proc/gpufreq/gpufreq_opp_dump 2>/dev/null | tail -n 1)
 		apply "$gpu_freq" /proc/gpufreq/gpufreq_opp_freq
 	fi
 

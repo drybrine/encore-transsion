@@ -1,5 +1,43 @@
 # Changelog
 
+## v5.2.2-transsion.4
+
+Portability pass: make the unlock work on other Transsion devices, not just the
+one it was built on.
+
+- **Clusters above 2 are no longer skipped.** The patcher only zeroed
+  `clusterCpu0` / `1` / `2`. A device with a fourth cluster would have been
+  unlocked *partially* — the cap would stay on the extra cluster and the unlock
+  would look broken. It now handles `clusterCpu0`..`clusterCpu7`, and the
+  verifier rejects any output that still caps a cluster at any index.
+- **Unrecognised cluster attributes are reported, not ignored.** If a config
+  uses an index above 7, the patcher prints a warning instead of silently
+  producing a half-unlocked file.
+- **`soc_recognition` fallback in the profiler.** The file was read with
+  `SOC=$(<file)`, which fails when the file is missing and leaves `SOC` empty —
+  that silently disables *every* SoC-specific tweak, which is what "Unknown
+  SoC" looked like. It now falls back to `ro.board.platform`, then to MediaTek.
+- **GPU OPP reads are guarded.** `/proc/gpufreq/gpufreq_opp_dump` is not exposed
+  on every MediaTek device, and reading it unguarded leaked `awk: fatal:` into
+  the daemon log.
+
+### Compatibility notes
+The unlock is generic in the ways that matter: it keys off USF's own element
+and attribute names, not temperature values, so a different device with a
+different throttle ladder works unchanged. What still varies per device:
+
+| Aspect | Handled how |
+|---|---|
+| Config path | tries `/tr_product/...` then `/system_ext/...` |
+| Throttle ladder (temps, freqs) | irrelevant — only the cap attributes are touched |
+| Number of CPU clusters | `clusterCpu0..7` |
+| Different attribute names | not patched (safe, but no effect) — the verifier still passes |
+| USF absent entirely | install reports it and does nothing |
+
+If a device uses a different schema the module leaves it alone rather than
+guessing.
+
+
 ## v5.2.2-transsion.3
 
 Diagnosed from a bug report whose `encore.log` contained **only the export

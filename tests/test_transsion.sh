@@ -94,6 +94,30 @@ t_patch_pipeline() {
   ok patch-pipeline
 }
 
+t_extra_clusters() {
+  # A 4-cluster device (or a future schema) must be unlocked fully, not
+  # partially: clusterCpu3+ has to be zeroed too.
+  printf '<root><temp_config tempLevel="41" cpu="0" clusterCpu0="1800000" clusterCpu1="2200000" clusterCpu2="0" clusterCpu3="2000000" clusterCpu4="1900000"/></root>\n' > "$TMP/multi.xml"
+  awk -f "$ROOT/scripts/transsion_patch_xml.awk" "$TMP/multi.xml" > "$TMP/multi.out" 2>"$TMP/multi.err" \
+    || { bad extra-clusters "patcher failed: $(cat "$TMP/multi.err")"; return; }
+  awk -f "$ROOT/scripts/transsion_verify_xml.awk" "$TMP/multi.out" 2>>"$TMP/multi.err" \
+    || { bad extra-clusters "verifier rejected the output"; return; }
+  for i in 0 1 2 3 4; do
+    grep -q "clusterCpu$i=\"0\"" "$TMP/multi.out" \
+      || { bad extra-clusters "clusterCpu$i not zeroed: $(cat "$TMP/multi.out")"; return; }
+  done
+  ok extra-clusters
+}
+
+t_verifier_catches_leftover_cluster() {
+  # The verifier is the last gate before a mount; it must reject an output that
+  # still caps a cluster, whatever its index.
+  printf '<root><temp_config tempLevel="41" cpu="0" clusterCpu0="0" clusterCpu5="2000000"/></root>\n' > "$TMP/leftover.xml"
+  awk -f "$ROOT/scripts/transsion_verify_xml.awk" "$TMP/leftover.xml" 2>/dev/null \
+    && { bad verify-leftover "verifier accepted a capped clusterCpu5"; return; }
+  ok verify-leftover-cluster
+}
+
 t_patch_fails_closed() {
   # A file with no temp_config must be rejected, not silently accepted.
   printf '<root><other/></root>\n' > "$TMP/empty.xml"
@@ -101,6 +125,21 @@ t_patch_fails_closed() {
   rc=$?
   [ "$rc" -ne 0 ] || { bad fail-closed "patcher accepted a file without temp_config"; return; }
   ok fail-closed
+}
+
+t_profiler_soc_fallback() {
+  # A missing soc_recognition must not silently disable every SoC tweak.
+  # The profiler is upstream's; this asserts the fallback we added.
+  grep -q 'Transsion ships MediaTek' "$ROOT/scripts/encore_profiler.sh" \
+    || { bad profiler-soc "no fallback in the profiler"; return; }
+  # and it must not read the file in a way that errors when absent
+  grep -q 'SOC=$(<' "$ROOT/scripts/encore_profiler.sh" \
+    && { bad profiler-soc "still uses the erroring \$(<file) form"; return; }
+  # GPU OPP tables are not exposed on every MediaTek device; reading them
+  # unguarded leaks awk's fatal error into the daemon log.
+  grep -q 'gpufreq_opp_dump |' "$ROOT/scripts/encore_profiler.sh" \
+    && { bad profiler-soc "unguarded gpufreq_opp_dump read"; return; }
+  ok profiler-soc
 }
 
 t_apply_without_patcher() {
@@ -120,7 +159,10 @@ t_status_with_config
 t_preference
 t_boot_honours_preference
 t_patch_pipeline
+t_extra_clusters
+t_verifier_catches_leftover_cluster
 t_patch_fails_closed
+t_profiler_soc_fallback
 t_apply_without_patcher
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

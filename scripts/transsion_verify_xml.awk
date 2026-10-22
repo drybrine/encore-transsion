@@ -41,10 +41,15 @@ END {
       continue
     }
     count++
-    if (attr_val(span, "cpu", "\"") != 0 || attr_val(span, "clusterCpu0", "\"") != 0 || \
-        attr_val(span, "clusterCpu1", "\"") != 0 || attr_val(span, "clusterCpu2", "\"") != 0 || \
-        attr_val(span, "cpu", "'") != 0 || attr_val(span, "clusterCpu0", "'") != 0 || \
-        attr_val(span, "clusterCpu1", "'") != 0 || attr_val(span, "clusterCpu2", "'") != 0) {
+    bad = (attr_val(span, "cpu", "\"") != 0 || attr_val(span, "cpu", "'") != 0)
+    for (ci = 0; ci <= 7; ci++) {
+      if (attr_val(span, "clusterCpu" ci, "\"") != 0) bad = 1
+      if (attr_val(span, "clusterCpu" ci, "'") != 0) bad = 1
+    }
+    # Any other cluster index must also be clear - the patcher only handles 0..7,
+    # so a leftover here means the device caps a cluster we do not know about.
+    if (match(span, /clusterCpu[0-9]+ *= *["\x27][1-9]/)) bad = 1
+    if (bad) {
       printf "verify_xml: ERROR: temp_config #%d still has a nonzero CPU cap value\n", count > "/dev/stderr"
       bad = 1
     }

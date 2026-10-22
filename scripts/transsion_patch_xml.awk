@@ -59,12 +59,17 @@ END {
     count++
     span = zero_attr(span, "cpu", "\"")
     span = zero_attr(span, "cpu", "'")
-    span = zero_attr(span, "clusterCpu0", "\"")
-    span = zero_attr(span, "clusterCpu0", "'")
-    span = zero_attr(span, "clusterCpu1", "\"")
-    span = zero_attr(span, "clusterCpu1", "'")
-    span = zero_attr(span, "clusterCpu2", "\"")
-    span = zero_attr(span, "clusterCpu2", "'")
+    # Every cluster index the schema might use, not just the three this device
+    # happens to have: a 4-cluster Transsion device must be unlocked fully, not
+    # partially. Unknown higher indices are reported, never silently ignored.
+    for (ci = 0; ci <= 7; ci++) {
+      span = zero_attr(span, "clusterCpu" ci, "\"")
+      span = zero_attr(span, "clusterCpu" ci, "'")
+    }
+    # A cluster index above 7 would silently keep its cap: say so.
+    if (match(span, /clusterCpu[0-9]+ *= *["\x27][1-9]/)) {
+      printf "patch_xml: WARN: unhandled cluster attribute in temp_config #%d: %s\n", count, substr(span, RSTART, 40) > "/dev/stderr"
+    }
     out = out span
   }
   out = out rest
