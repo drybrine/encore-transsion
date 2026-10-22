@@ -95,6 +95,35 @@ t_patch_pipeline() {
   ok patch-pipeline
 }
 
+t_scene_blocks_too() {
+  # USF picks a config per "scene": screen-off, multi-window, an app scene, game
+  # mode, else defaultScene. Every one of those blocks carries its own CPU cap,
+  # so the patch must zero all of them - not just the default one. Otherwise an
+  # app that maps to a scene would stay capped.
+  cat > "$TMP/scene.xml" <<'XML'
+<thermalEngineConfig><thermalPolicyConfig>
+  <default enable="true"><common_config>
+    <temp_config tempLevel="41" cpu="0" clusterCpu0="1800000" clusterCpu1="2200000"/>
+  </common_config></default>
+  <scene sceneName="scene_social">
+    <temp_config tempLevel="41" cpu="0" clusterCpu0="1500000" clusterCpu1="1800000"/>
+  </scene>
+  <scene sceneName="scene_game_144">
+    <temp_config tempLevel="41" cpu="0" clusterCpu0="2000000" clusterCpu1="2600000"/>
+  </scene>
+</thermalPolicyConfig></thermalEngineConfig>
+XML
+  awk -f "$ROOT/scripts/transsion_patch_xml.awk" "$TMP/scene.xml" > "$TMP/scene.out" 2>"$TMP/scene.err" \
+    || { bad scenes "patcher failed: $(cat "$TMP/scene.err")"; return; }
+  awk -f "$ROOT/scripts/transsion_verify_xml.awk" "$TMP/scene.out" 2>>"$TMP/scene.err" \
+    || { bad scenes "verifier rejected the output"; return; }
+  n=$(grep -o 'clusterCpu0="0"' "$TMP/scene.out" | wc -l | tr -d ' ')
+  [ "$n" = "3" ] || { bad scenes "$n of 3 scene/default blocks zeroed"; return; }
+  grep -q 'clusterCpu[01]="[1-9]' "$TMP/scene.out" \
+    && { bad scenes "a capped block survived: $(cat "$TMP/scene.out")"; return; }
+  ok scenes
+}
+
 t_extra_clusters() {
   # A 4-cluster device (or a future schema) must be unlocked fully, not
   # partially: clusterCpu3+ has to be zeroed too.
@@ -191,6 +220,7 @@ t_status_with_config
 t_preference
 t_boot_honours_preference
 t_patch_pipeline
+t_scene_blocks_too
 t_extra_clusters
 t_verifier_catches_leftover_cluster
 t_patch_fails_closed
