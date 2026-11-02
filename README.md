@@ -2,7 +2,7 @@
 >
 > On Transsion XOS, `com.transsion.usf` caps the CPU clusters from a *virtual skin temperature* — on an Infinix Note 60 that is 1.8 / 2.2 GHz instead of 2.0 / 2.6 GHz at a 41 °C skin reading, and it re-clamps within a second even when you write the ceiling by hand. That clamp sits **underneath** Encore's own tweaks, so profiles could never reach the hardware maximum.
 >
-> This fork removes **only** that CPU cap, using USF's own "no CPU limit" encoding in its thermal config, and leaves the rest of Encore untouched. See [Transsion CPU unlock](#transsion-cpu-unlock) below.
+> This fork ships two ways to remove that cap, and leaves the rest of Encore untouched: **method `all`** (default) turns `com.transsion.usf` off entirely, **method `cpu`** patches only the CPU columns of its thermal config. See [Transsion CPU unlock](#transsion-cpu-unlock) below.
 >
 > Everything else here is upstream. Report upstream bugs upstream.
 
@@ -39,7 +39,27 @@ Because USF applies that cap through MediaTek PowerHAL, writing
 `scaling_max_freq` by hand is undone in under a second — Encore's governors and
 frequency pinning were fighting a limiter that wins.
 
-This fork removes the cap at its source:
+This fork removes the cap with one of two methods. **The default is `all`.**
+
+| Method | What it removes | What else stops working |
+|---|---|---|
+| `all` (default) | USF itself: the package is disabled, so no `TranThermalEngine` method runs | GPU throttle, brightness/HBM, refresh rate, FPS, media-volume reduction, wifi/bt policy, PowerHAL locks, core isolation, torch — all unmanaged |
+| `cpu` | Only the CPU ceiling, from USF's own config | nothing else |
+
+Either way every kernel thermal zone, trip point and junction protection stays
+stock: the device still throttles at the kernel trip points. It **can run
+hotter** under sustained load; watch your temperatures.
+
+### Method `all` — turn USF off (default)
+
+Same code path as [`usf-off`](https://github.com/drybrine/usf-off):
+`pm disable-user --user 0 com.transsion.usf`, then a kill by exact cmdline
+match. It runs only after `sys.boot_completed` — disabling a persistent system
+app before the framework is up can restart the boot sequence — so on each boot
+USF applies its policy for the first few seconds and then stops. `restore`
+re-enables the package.
+
+### Method `cpu` — patch the config
 
 1. Copies USF's own `tran_thermal.xml` and zeroes **only** the `cpu` /
    `clusterCpu0` / `clusterCpu1` / `clusterCpu2` attributes of every
@@ -52,9 +72,7 @@ This fork removes the cap at its source:
    not run, so `service.sh` mounts and reloads USF instead.
 
 Everything else in that config — skin TJ targets, brightness/HBM, charging,
-GPU, FPS — and every kernel thermal zone, trip point and junction protection
-stays stock. The device **can run hotter** under sustained load; watch your
-temperatures.
+GPU, FPS — stays byte-identical.
 
 ### Starting the daemon after a soft reboot
 
@@ -80,14 +98,24 @@ su -c '/data/adb/modules/encore-transsion/system/bin/encore_transsion disable'
 su -c '/data/adb/modules/encore-transsion/system/bin/encore_transsion enable'
 ```
 
-`status` prints the mount state, the live engine row (`clusterCpu0=`, the
-engine's own CPU limit for the current temperature level) and every cpufreq
+`status` prints the active method, the package/mount state and every cpufreq
 ceiling against its hardware maximum — so you can see the cap is gone rather
 than trust it.
 
-The preference is persisted, so a reboot keeps whichever state you picked. On a
-device without the Transsion thermal config the script reports that it does not
-apply and does nothing.
+Switch method (the old one is undone first: unmount or re-enable, never both at
+once):
+
+```sh
+su -c '/data/adb/modules/encore/system/bin/encore_transsion method cpu'
+su -c '/data/adb/modules/encore/system/bin/encore_transsion method all'
+```
+
+The preference and the method are persisted, so a reboot keeps whichever state
+you picked. On a device without USF the script reports that it does not apply
+and does nothing.
+
+Do **not** run this alongside `usf-unlock` or `usf-cpu-unlock`: they bind-mount
+a patched copy over the same path, and whichever mounts first wins. Pick one.
 
 ## Supported Root Managers
 

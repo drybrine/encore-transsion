@@ -19,7 +19,9 @@
 MODDIR=${0%/*}
 [ -f "$MODDIR/disable" ] && exit 0
 
-# 1. Transsion USF CPU cap unlock
+# 1. Transsion USF unlock. Method cpu mounts the patched thermal config here,
+#    before USF reads it. Method all deliberately defers to service.sh: a
+#    persistent system app must not be disabled before the framework is up.
 if [ -f "$MODDIR/system/bin/encore_transsion" ]; then
 	export MODDIR
 	"$MODDIR/system/bin/encore_transsion" boot \

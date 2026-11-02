@@ -82,10 +82,10 @@ if [ -f "$ENABLE_PPM" ]; then
 	echo 1 >"$ENABLE_PPM"
 fi
 
-# Transsion USF CPU cap unlock. post-fs-data.sh mounts it before USF starts on
-# permanent root (so this is a no-op there); under late-load - GhostLock and
-# friends - that stage never runs and USF is already up with the stock config,
-# so mount and reload it here, before the daemon measures the ceilings.
+# Transsion USF unlock, method-aware. Method cpu mounts the patched config here
+# when post-fs-data did not (late-load: GhostLock and friends never run that
+# stage). Method all disables com.transsion.usf here, after boot_completed -
+# that is the only stage where disabling a persistent system app is safe.
 if [ -f "$MODDIR/system/bin/encore_transsion" ]; then
 	export MODDIR
 	"$MODDIR/system/bin/encore_transsion" boot --restart \

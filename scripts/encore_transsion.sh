@@ -28,19 +28,36 @@
 # targets, brightness, charging, GPU, FPS - stays byte-identical.
 #
 # Commands:
-#   status              show mount state + live ceilings
-#   apply [--mount-only] mount the patched config (and restart USF unless
+#   status              show method, mount/package state + live ceilings
+#   apply [--mount-only] cpu: mount the patched config (and restart USF unless
 #                       --mount-only, which is for boot/install where USF has
 #                       not read its config yet)
-#   restore             unmount and let USF reload the stock config
+#                       all: disable the package and kill it (nothing else)
+#   restore             cpu: unmount and let USF reload the stock config
+#                       all: re-enable the package
 #   enable | disable    persist the preference (survives reboot)
-#   install             installer entry point (detect + apply mount-only)
+#   method [cpu|all]    show or switch the unlock method
+#   install             installer entry point (detect + apply)
 #
-# The preference lives in $MODULE_CONFIG/transsion_unlock ("1"/"0").
+# The preference lives in $MODULE_CONFIG/transsion_unlock ("1"/"0"), the method
+# in $MODULE_CONFIG/transsion_method ("all" when absent).
+#
+# METHOD all is the blunt one, and the default: it disables com.transsion.usf
+# outright, so every TranThermalEngine method stops at once - CPU ceiling, GPU
+# throttle, brightness/HBM, refresh rate, FPS, media volume, wifi/bt, PowerHAL,
+# core isolation, torch. The kernel thermal driver is untouched and still
+# throttles at its trip points. METHOD cpu is the surgical one: it only zeroes
+# the cpu/clusterCpu* attributes in USF's own thermal config.
 
 MODULE_ID="encore"   # must match the prebuilt encored binary's hardcoded MODPATH
 MODULE_CONFIG=${TRANS_SION_CONFIG:-/data/adb/.config/encore}
 PREF="$MODULE_CONFIG/transsion_unlock"
+METHOD_PREF="$MODULE_CONFIG/transsion_method"
+USF_PKG=${TRANS_SION_PKG:-com.transsion.usf}
+# Boot gate and post-disable settle. Both are overridable so the host suite does
+# not have to wait for a real boot.
+BOOT_WAIT=${TRANS_SION_BOOT_WAIT:-120}
+SETTLE=${TRANS_SION_SETTLE:-2}
 
 # Resolve our own directory: this script is installed as system/bin/encore_transsion
 # inside the module, and is also callable through the manager's bin symlink.
@@ -139,7 +156,7 @@ usf_installed() {
 	for d in /proc/[0-9]*; do
 		[ -r "$d/cmdline" ] || continue
 		c=$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null)
-		case "$c" in com.transsion.usf | com.transsion.usf\ *) return 0 ;; esac
+		case "$c" in "$USF_PKG" | "$USF_PKG "\ *) return 0 ;; esac
 	done
 	for p in /system/app/*Usf* /system/priv-app/*Usf* /system_ext/app/*Usf* \
 	         /system_ext/priv-app/*Usf* /product/app/*Usf* /product/priv-app/*Usf* \
@@ -155,9 +172,55 @@ usf_pids() {
 		[ -r "$d/cmdline" ] || continue
 		c=$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null) || continue
 		case "$c" in
-		com.transsion.usf | com.transsion.usf\ *) printf '%s\n' "${d#/proc/}" ;;
+		"$USF_PKG" | "$USF_PKG "\ *) printf '%s\n' "${d#/proc/}" ;;
 		esac
 	done
+}
+
+# --- package state (method all) ---------------------------------------------
+
+pkg_installed() {
+	pm list packages 2>/dev/null | sed 's/^package://' | grep -qxF "$USF_PKG"
+}
+
+pkg_disabled() {
+	pm list packages -d 2>/dev/null | sed 's/^package://' | grep -qxF "$USF_PKG"
+}
+
+settle() {
+	[ "$SETTLE" -gt 0 ] && sleep "$SETTLE"
+	return 0
+}
+
+# The method decides what "unlock" means. Anything unreadable or unknown falls
+# back to `all`: that is the documented default, and a corrupted preference must
+# not silently downgrade the user to the partial unlock.
+method() {
+	if rd "$METHOD_PREF"; then
+		case "$RF" in
+		cpu) printf 'cpu' ;;
+		all) printf 'all' ;;
+		*) printf 'all' ;;
+		esac
+		return 0
+	fi
+	printf 'all'
+}
+
+# Wait for the framework. Disabling a persistent system app before
+# sys.boot_completed can restart the boot sequence, so method all never acts
+# earlier - not at install, not at post-fs-data.
+wait_boot_completed() {
+	command -v getprop >/dev/null 2>&1 || return 0
+	[ -n "$(getprop sys.boot_completed 2>/dev/null)" ] && return 0
+	i=0
+	while [ "$i" -lt "$BOOT_WAIT" ]; do
+		sleep 1
+		[ -n "$(getprop sys.boot_completed 2>/dev/null)" ] && return 0
+		i=$((i + 1))
+	done
+	log "ERROR: sys.boot_completed not set after ${BOOT_WAIT}s; USF left alone"
+	return 1
 }
 
 pref_enabled() {
@@ -210,7 +273,7 @@ restart_usf() {
 		# between the scan and here.
 		c=$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null) || continue
 		case "$c" in
-		com.transsion.usf | com.transsion.usf\ *) kill -9 "$p" 2>/dev/null ;;
+		"$USF_PKG" | "$USF_PKG "\ *) kill -9 "$p" 2>/dev/null ;;
 		esac
 	done
 	i=0
@@ -225,6 +288,88 @@ restart_usf() {
 	done
 	log "WARN: USF did not restart within 30s (it is persistent and should return on its own)"
 	return 1
+}
+
+# --- method all: turn USF off outright --------------------------------------
+
+# Same code path as usf-off: disable the package, then kill it by exact cmdline.
+# Both halves matter - the disable stops the respawn, the kill stops the policy
+# that is already in memory.
+kill_usf() {
+	pids=$(usf_pids | tr '\n' ' ')
+	[ -n "$pids" ] || return 0
+	for p in $pids; do
+		# Re-read cmdline immediately before the kill: a PID can be recycled
+		# between the scan and here.
+		c=$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null) || continue
+		case "$c" in
+		"$USF_PKG" | "$USF_PKG "\ *) kill -9 "$p" 2>/dev/null ;;
+		esac
+	done
+	i=0
+	while [ "$i" -lt 15 ]; do
+		[ -z "$(usf_pids)" ] && return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	log "WARN: USF still has a live process after SIGKILL (it is persistent and may be respawned)"
+	return 1
+}
+
+disable_usf_locked() {
+	if ! pkg_installed; then
+		log "$USF_PKG is not installed on this build; nothing to turn off"
+		return 0
+	fi
+	if pkg_disabled; then
+		log "already off: $USF_PKG is disabled"
+	else
+		if ! out=$(pm disable-user --user 0 "$USF_PKG" 2>&1); then
+			log "disable-user failed ($out); trying plain disable"
+			out=$(pm disable "$USF_PKG" 2>&1) || {
+				log "ERROR: could not disable $USF_PKG: $out"
+				return 1
+			}
+		fi
+		settle
+		if ! pkg_disabled; then
+			log "ERROR: $USF_PKG still reports enabled after disable (the manager may be overriding it)"
+			return 1
+		fi
+		log "package disabled: every TranThermalEngine method is off (cpu, gpu, brightness, hbm, refresh, fps, volume, wifi/bt, powerhal, isolate, torch)"
+	fi
+
+	kill_usf
+	rc=$?
+	# A persistent app can be respawned; give it a moment and check again.
+	settle
+	[ -n "$(usf_pids)" ] && log "WARN: USF respawned after being killed (persistent=true)"
+
+	log "APPLIED (method all): USF is off; kernel thermal trip points still throttle"
+	print_freqs
+	return $rc
+}
+
+enable_usf_locked() {
+	if ! pkg_installed; then
+		log "$USF_PKG is not installed on this build; nothing to re-enable"
+		return 0
+	fi
+	if ! pkg_disabled; then
+		log "already on: $USF_PKG is enabled"
+		return 0
+	fi
+	out=$(pm enable "$USF_PKG" 2>&1) || {
+		log "ERROR: could not enable $USF_PKG: $out"
+		return 1
+	}
+	settle
+	if pkg_disabled; then
+		log "ERROR: $USF_PKG still reports disabled after enable"
+		return 1
+	fi
+	log "package enabled; its thermal policy applies again on its next start"
+	return 0
 }
 
 engine_state() {
@@ -348,7 +493,15 @@ do_apply() {
 		log "ERROR: another apply/restore is already running"
 		return 1
 	}
-	apply_locked "$@"
+	if [ "$(method)" = all ]; then
+		if ! wait_boot_completed; then
+			lock_release
+			return 1
+		fi
+		disable_usf_locked
+	else
+		apply_locked "$@"
+	fi
 	rc=$?
 	lock_release
 	return $rc
@@ -359,15 +512,53 @@ do_restore() {
 		log "ERROR: another apply/restore is already running"
 		return 1
 	}
-	restore_locked
+	if [ "$(method)" = all ]; then
+		enable_usf_locked
+	else
+		restore_locked
+	fi
 	rc=$?
 	lock_release
 	return $rc
 }
 
 do_status() {
+	m=$(method)
 	ui "encore-transsion"
 	ui "rom         : $(rom_name)"
+	ui "method      : $m  (all = USF off entirely; cpu = patched thermal config)"
+	if pref_enabled; then
+		ui "preference  : enabled"
+	else
+		ui "preference  : disabled"
+	fi
+
+	if [ "$m" = all ]; then
+		if ! pkg_installed; then
+			ui "usf app     : absent"
+			ui "state       : nothing to unlock - USF only ships on XOS / HiOS / itelOS"
+			return 0
+		fi
+		ui "usf app     : $USF_PKG"
+		if pkg_disabled; then
+			ui "state       : OFF (package disabled - no TranThermalEngine method runs)"
+		else
+			ui "state       : ON (USF owns cpu, gpu, brightness, refresh, fps, volume)"
+		fi
+		pids=$(usf_pids | tr '\n' ' ')
+		ui "usf pid(s)  : ${pids:-not running}"
+		if [ -n "$SRC" ]; then
+			if is_mounted "$SRC"; then
+				ui "config mount: patched config mounted (left over from method cpu)"
+			else
+				ui "config mount: none (stock file)"
+			fi
+		fi
+		ui "cpufreq caps (max vs hardware max):"
+		print_freqs
+		return 0
+	fi
+
 	if [ -z "$SRC" ]; then
 		ui "usf config  : not present"
 		if usf_installed; then
@@ -384,11 +575,6 @@ do_status() {
 		ui "usf cap     : DISABLED (patched config mounted)"
 	else
 		ui "usf cap     : stock (USF clamps CPU from skin temperature)"
-	fi
-	if pref_enabled; then
-		ui "preference  : enabled"
-	else
-		ui "preference  : disabled"
 	fi
 	pids=$(usf_pids | tr '\n' ' ')
 	ui "usf pid(s)  : ${pids:-not running}"
@@ -410,13 +596,92 @@ do_disable() {
 	do_restore
 }
 
+# Switch the unlock method, moving the device from the old state to the new one
+# instead of leaving a bind mount and a disabled package behind at once.
+do_method() {
+	cur=$(method)
+	new=${1:-}
+	case "$new" in
+	"")
+		ui "method: $cur"
+		return 0
+		;;
+	cpu | all) : ;;
+	*)
+		ui "usage: $0 method {cpu|all}"
+		return 2
+		;;
+	esac
+	if [ "$new" = "$cur" ]; then
+		ui "method: already $new"
+		return 0
+	fi
+
+	lock_acquire || {
+		log "ERROR: another apply/restore is already running"
+		return 1
+	}
+
+	# Undo the old method first: leaving the patched config mounted under
+	# method all would hide the fact that the package is off, and leaving the
+	# package off under method cpu would keep every other policy disabled.
+	if [ "$cur" = all ]; then
+		enable_usf_locked || {
+			lock_release
+			ui "ERROR: could not re-enable $USF_PKG; method unchanged"
+			return 1
+		}
+	else
+		restore_locked
+	fi
+
+	mkdir -p "$MODULE_CONFIG" 2>/dev/null
+	printf '%s\n' "$new" >"$METHOD_PREF"
+	set_pref 1
+
+	if [ "$new" = all ]; then
+		if wait_boot_completed; then
+			disable_usf_locked
+		else
+			ui "framework not up; the boot hook will apply method all"
+		fi
+	else
+		apply_locked
+	fi
+	rc=$?
+	lock_release
+	ui "method: $new"
+	return $rc
+}
+
 # Boot/late-load entry point: honours the persisted preference.
-#   boot            mount only (post-fs-data: USF has not read its config yet)
-#   boot --restart  mount and reload USF (service.sh / late-load, where USF is
-#                   already running with the stock config)
+#   boot            post-fs-data stage: cpu mounts the config, all defers
+#   boot --restart  service.sh / late-load: the stage that may act for method all
 do_boot() {
-	[ -n "$SRC" ] || return 0
 	pref_enabled || return 0
+
+	if [ "$(method)" = all ]; then
+		# Disabling a persistent system app before the framework is up can
+		# restart the boot sequence, so post-fs-data does not do it. service.sh
+		# passes --restart and runs after sys.boot_completed.
+		if [ "$1" != "--restart" ]; then
+			log "method all: deferred to service.sh (framework not up at this stage)"
+			return 0
+		fi
+		if ! wait_boot_completed; then
+			return 1
+		fi
+		lock_acquire || {
+			log "ERROR: another apply/restore is already running"
+			return 1
+		}
+		disable_usf_locked
+		rc=$?
+		lock_release
+		return $rc
+	fi
+
+	[ -n "$SRC" ] || return 0
 	if is_mounted "$SRC"; then
 		return 0
 	fi
@@ -436,6 +701,7 @@ do_doctor() {
 	ui "encore-transsion doctor"
 	ui "module dir  : $MD"
 	ui "rom         : $(rom_name)"
+	ui "method      : $(method)"
 	ui ""
 
 	ui "[daemon]"
@@ -495,7 +761,7 @@ do_doctor() {
 	done
 	ui ""
 
-	ui "[usf cpu cap]"
+	ui "[usf]"
 	do_status | sed 's/^/  /'
 }
 
@@ -520,8 +786,27 @@ do_start() {
 }
 
 do_install() {
-	# Installer entry point: mount only, no USF restart (the user reboots after
-	# installing, and USF reads its config during that boot).
+	if [ "$(method)" = all ]; then
+		if ! pkg_installed; then
+			ui "- ROM: $(rom_name)"
+			ui "- No Transsion USF on this build: nothing to unlock"
+			ui "  (USF only ships on XOS, HiOS and itelOS - not on custom ROMs)"
+			return 0
+		fi
+		set_pref 1
+		ui "- Transsion USF detected: turning it off (method all)"
+		if ! wait_boot_completed; then
+			ui "  - framework is not up yet; the boot hook will apply it"
+			return 0
+		fi
+		# pm can be unreachable from the installer; that is not fatal, the
+		# boot hook retries. Never abort the install over it.
+		disable_usf_locked || ui "  - could not turn it off now; the boot hook will retry"
+		return 0
+	fi
+
+	# Installer entry point for method cpu: mount only, no USF restart (the user
+	# reboots after installing, and USF reads its config during that boot).
 	if [ -z "$SRC" ]; then
 		if usf_installed; then
 			ui "- USF is installed but its thermal config was not found: unlock skipped"
@@ -547,6 +832,10 @@ apply)
 restore) do_restore ;;
 enable) do_enable ;;
 disable) do_disable ;;
+method)
+	shift
+	do_method "$@"
+	;;
 install) do_install ;;
 doctor) do_doctor ;;
 start) do_start ;;
@@ -555,7 +844,7 @@ boot)
 	do_boot "$@"
 	;;
 *)
-	ui "usage: $0 {status|apply [--mount-only]|restore|enable|disable|install|boot [--restart]|doctor|start}"
+	ui "usage: $0 {status|apply [--mount-only]|restore|enable|disable|method [cpu|all]|install|boot [--restart]|doctor|start}"
 	exit 2
 	;;
 esac

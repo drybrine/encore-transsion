@@ -1,5 +1,37 @@
 # Changelog
 
+## v5.2.2-transsion.8
+
+**Method `all` is now the default: USF is turned off, not just capped.**
+
+Up to .7 the fork only zeroed the CPU columns of `tran_thermal.xml`. That left
+`TranThermalEngine` in charge of everything else it owns — GPU throttle,
+brightness/HBM, refresh rate, FPS, the media-volume reduction, wifi/bt policy,
+PowerHAL locks, core isolation and torch. Method `all` disables
+`com.transsion.usf` outright, so none of those run.
+
+- New `method {all|cpu}` command; the choice is persisted in
+  `$MODULE_CONFIG/transsion_method`, and `all` is used when the file is absent.
+- Method `all` is the `usf-off` code path: `pm disable-user --user 0` (falling
+  back to `pm disable`), then a kill by exact cmdline match. A refused disable
+  is reported, never swallowed.
+- Method `all` only acts after `sys.boot_completed`. `post-fs-data` explicitly
+  defers: disabling a persistent system app before the framework is up can
+  restart the boot sequence. Consequence: on each boot USF applies its policy
+  for the first few seconds, then stops.
+- Switching method undoes the old one first — the bind mount is unmounted, or
+  the package is re-enabled — instead of leaving both active.
+- `status` and `doctor` report the active method, the package state, the
+  process and the live cpufreq ceilings. `install` no longer fails when `pm` is
+  unreachable from the installer; the boot hook retries.
+- Method `cpu` is unchanged and still selectable.
+
+Verified: 26 host tests (11 new for method all, including a refused `pm`
+disable, the post-fs-data deferral, `restore` re-enabling the package, and a
+switch from `all` to `cpu` that re-enables before it mounts) plus the 15
+watchdog tests.
+
+
 ## v5.2.2-transsion.7
 
 **The watchdog no longer stays resident.** It runs once at boot, starts

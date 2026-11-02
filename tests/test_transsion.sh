@@ -25,6 +25,61 @@ run() { # run <args...> with an isolated config dir and no USF present
     sh "$BIN" "$@" 2>&1
 }
 
+# Method all talks to the package manager and waits for the framework. Both are
+# faked so the whole disable/enable path can be exercised on a PC.
+FAKE_PKG=com.transsion.usf
+setup_fakes() {
+  mkdir -p "$TMP/fakebin"
+  cat > "$TMP/fakebin/pm" <<'SH'
+#!/bin/sh
+echo "$*" >> "$FAKE_PM_LOG"
+st=""
+[ -f "$FAKE_PM_STATE" ] && st=$(cat "$FAKE_PM_STATE")
+inst="${FAKE_PM_INSTALLED:-1}"
+case "$1" in
+list)
+  [ "$inst" = 1 ] || exit 0
+  case "$3" in
+  -d) [ "$st" = disabled ] && echo "package:$FAKE_PM_PKG" ;;
+  *) echo "package:$FAKE_PM_PKG" ;;
+  esac
+  ;;
+disable-user|disable)
+  [ "${FAKE_PM_REFUSE:-0}" = 1 ] && { echo "Error: not allowed" >&2; exit 1; }
+  echo disabled > "$FAKE_PM_STATE"
+  ;;
+enable)
+  echo enabled > "$FAKE_PM_STATE"
+  ;;
+esac
+exit 0
+SH
+  cat > "$TMP/fakebin/getprop" <<'SH'
+#!/bin/sh
+case "$1" in sys.boot_completed) echo 1 ;; esac
+SH
+  chmod +x "$TMP/fakebin/pm" "$TMP/fakebin/getprop"
+}
+
+runp() { # run <args...> with the fake pm/getprop on PATH, no waiting
+  PATH="$TMP/fakebin:$PATH" TRANS_SION_CONFIG="$TMP/cfg" TRANS_SION_SRC="${TSRC:-}" \
+    MODDIR="$TMP/mod" TRANS_SION_SETTLE=0 TRANS_SION_BOOT_WAIT=0 \
+    FAKE_PM_PKG="$FAKE_PKG" FAKE_PM_STATE="$TMP/pmstate" FAKE_PM_LOG="$TMP/pm.log" \
+    FAKE_PM_INSTALLED="${FAKE_PM_INSTALLED:-1}" FAKE_PM_REFUSE="${FAKE_PM_REFUSE:-0}" \
+    sh "$BIN" "$@" 2>&1
+}
+
+reset_all() { # fresh config, no pm state, preference enabled, method default
+  rm -rf "$TMP/cfg" "$TMP/mod" "$TMP/pm.log" "$TMP/pmstate"
+  mkdir -p "$TMP/cfg"
+  printf '1\n' > "$TMP/cfg/transsion_unlock"
+}
+
+set_method() {
+  mkdir -p "$TMP/cfg"
+  printf '%s\n' "$1" > "$TMP/cfg/transsion_method"
+}
+
 t_usage() {
   out=$(run bogus); rc=$?
   [ "$rc" -eq 2 ] || { bad usage "exit $rc, expected 2"; return; }
@@ -36,7 +91,7 @@ t_not_transsion() {
   # No override and no real config on the host: must report and exit cleanly.
   out=$(TRANS_SION_CONFIG="$TMP/cfg" sh "$BIN" status 2>&1); rc=$?
   [ "$rc" -eq 0 ] || { bad no-transsion "exit $rc"; return; }
-  echo "$out" | grep -q 'usf config  : not present' || { bad no-transsion "got: $out"; return; }
+  echo "$out" | grep -q 'usf app     : absent' || { bad no-transsion "got: $out"; return; }
   echo "$out" | grep -q 'nothing to unlock' || { bad no-transsion "no explanation: $out"; return; }
   ok no-transsion
 }
@@ -44,13 +99,14 @@ t_not_transsion() {
 t_install_skips_cleanly() {
   out=$(TRANS_SION_CONFIG="$TMP/cfg" sh "$BIN" install 2>&1); rc=$?
   [ "$rc" -eq 0 ] || { bad install-skip "exit $rc"; return; }
-  echo "$out" | grep -q 'does not apply' || { bad install-skip "got: $out"; return; }
+  echo "$out" | grep -q 'nothing to unlock' || { bad install-skip "got: $out"; return; }
   # it must not have created a preference for a device it cannot help
   [ -f "$TMP/cfg/transsion_unlock" ] && { bad install-skip "preference written anyway"; return; }
   ok install-skip
 }
 
 t_status_with_config() {
+  rm -rf "$TMP/cfg"; set_method cpu
   TSRC="$FIX/pretty.xml" run status > "$TMP/out" 2>&1
   grep -q 'usf cap     : stock' "$TMP/out" || { bad status "no stock line: $(cat "$TMP/out")"; return; }
   grep -q 'preference  : disabled' "$TMP/out" || { bad status "preference default wrong"; return; }
@@ -205,12 +261,133 @@ t_profiler_soc_fallback() {
 
 t_apply_without_patcher() {
   # If the awk files are missing the script must refuse, not mount garbage.
-  mkdir -p "$TMP/fakebin"
+  mkdir -p "$TMP/fakebin"; set_method cpu
   cp "$BIN" "$TMP/fakebin/encore_transsion"
   out=$(TRANS_SION_CONFIG="$TMP/cfg" TRANS_SION_SRC="$FIX/pretty.xml" \
         MODDIR="$TMP/mod" sh "$TMP/fakebin/encore_transsion" apply --mount-only 2>&1)
   echo "$out" | grep -q 'patcher missing' || { bad no-patcher "got: $out"; return; }
   ok no-patcher
+}
+
+# --- method all (the usf-off path) ------------------------------------------
+
+t_method_default_is_all() {
+  rm -rf "$TMP/cfg"
+  out=$(run status 2>&1)
+  echo "$out" | grep -q 'method      : all' || { bad method-default "got: $out"; return; }
+  ok method-default
+}
+
+t_method_switch_persists() {
+  reset_all
+  setup_fakes
+  runp method cpu >/dev/null 2>&1
+  [ "$(cat "$TMP/cfg/transsion_method" 2>/dev/null)" = cpu ] \
+    || { bad method-switch "cpu not persisted"; return; }
+  [ "$(cat "$TMP/cfg/transsion_unlock" 2>/dev/null)" = 1 ] \
+    || { bad method-switch "preference not re-enabled"; return; }
+  out=$(runp method)
+  echo "$out" | grep -q 'method: cpu' || { bad method-switch "shows wrong method: $out"; return; }
+  ok method-switch
+}
+
+t_all_disables_package() {
+  reset_all
+  setup_fakes
+  out=$(runp apply 2>&1)
+  rc=$?
+  [ "$rc" -eq 0 ] || { bad all-apply "exit $rc: $out"; return; }
+  [ "$(cat "$TMP/pmstate" 2>/dev/null)" = disabled ] \
+    || { bad all-apply "package not disabled: $out"; return; }
+  grep -q 'disable-user --user 0 com.transsion.usf' "$TMP/pm.log" \
+    || { bad all-apply "pm disable-user not called: $(cat "$TMP/pm.log")"; return; }
+  echo "$out" | grep -q 'APPLIED (method all)' || { bad all-apply "no applied line: $out"; return; }
+  ok all-apply
+}
+
+t_all_is_idempotent() {
+  reset_all
+  setup_fakes
+  runp apply >/dev/null 2>&1
+  : > "$TMP/pm.log"
+  out=$(runp apply 2>&1)
+  echo "$out" | grep -q 'already off' || { bad all-idempotent "got: $out"; return; }
+  grep -q 'disable-user' "$TMP/pm.log" && { bad all-idempotent "disabled twice"; return; }
+  ok all-idempotent
+}
+
+t_all_reports_pm_refusal() {
+  reset_all
+  setup_fakes
+  out=$(FAKE_PM_REFUSE=1 runp apply 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || { bad all-refusal "exit 0 on a refused disable"; return; }
+  echo "$out" | grep -q 'ERROR' || { bad all-refusal "failure swallowed: $out"; return; }
+  ok all-refusal
+}
+
+t_all_boot_defers_to_service() {
+  reset_all
+  setup_fakes
+  out=$(runp boot 2>&1)
+  rc=$?
+  [ "$rc" -eq 0 ] || { bad all-boot-defer "exit $rc: $out"; return; }
+  if [ -f "$TMP/pm.log" ]; then
+    grep -q 'disable' "$TMP/pm.log" && { bad all-boot-defer "disabled at post-fs-data"; return; }
+  fi
+  echo "$out" | grep -q 'deferred to service.sh' || { bad all-boot-defer "no deferral note: $out"; return; }
+  ok all-boot-defer
+}
+
+t_all_boot_restart_applies() {
+  reset_all
+  setup_fakes
+  runp boot --restart >/dev/null 2>&1
+  [ "$(cat "$TMP/pmstate" 2>/dev/null)" = disabled ] \
+    || { bad all-boot-restart "not disabled at the service.sh stage"; return; }
+  ok all-boot-restart
+}
+
+t_all_restore_reenables() {
+  reset_all
+  setup_fakes
+  runp apply >/dev/null 2>&1
+  out=$(runp restore 2>&1)
+  rc=$?
+  [ "$rc" -eq 0 ] || { bad all-restore "exit $rc: $out"; return; }
+  [ "$(cat "$TMP/pmstate" 2>/dev/null)" = enabled ] || { bad all-restore "still disabled"; return; }
+  ok all-restore
+}
+
+t_all_no_usf_is_noop() {
+  reset_all
+  setup_fakes
+  out=$(FAKE_PM_INSTALLED=0 runp apply 2>&1)
+  rc=$?
+  [ "$rc" -eq 0 ] || { bad all-no-usf "exit $rc: $out"; return; }
+  echo "$out" | grep -q 'nothing to turn off' || { bad all-no-usf "got: $out"; return; }
+  if [ -f "$TMP/pm.log" ]; then
+    grep -q 'disable' "$TMP/pm.log" && { bad all-no-usf "tried to disable a missing package"; return; }
+  fi
+  ok all-no-usf
+}
+
+t_switch_all_to_cpu_reenables_first() {
+  reset_all
+  setup_fakes
+  runp apply >/dev/null 2>&1
+  : > "$TMP/pm.log"
+  runp method cpu >/dev/null 2>&1
+  grep -q 'enable com.transsion.usf' "$TMP/pm.log" \
+    || { bad switch-cpu "package not re-enabled: $(cat "$TMP/pm.log")"; return; }
+  [ "$(cat "$TMP/cfg/transsion_method")" = cpu ] || { bad switch-cpu "method not persisted"; return; }
+  ok switch-all-to-cpu
+}
+
+t_usage_lists_method() {
+  out=$(run bogus 2>&1)
+  echo "$out" | grep -q 'method \[cpu|all\]' || { bad usage-method "got: $out"; return; }
+  ok usage-method
 }
 
 t_usage
@@ -228,6 +405,17 @@ t_rom_detection
 t_no_usf_is_noop
 t_profiler_soc_fallback
 t_apply_without_patcher
+t_method_default_is_all
+t_method_switch_persists
+t_all_disables_package
+t_all_is_idempotent
+t_all_reports_pm_refusal
+t_all_boot_defers_to_service
+t_all_boot_restart_applies
+t_all_restore_reenables
+t_all_no_usf_is_noop
+t_switch_all_to_cpu_reenables_first
+t_usage_lists_method
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
