@@ -59,14 +59,20 @@ app before the framework is up can restart the boot sequence — so on each boot
 USF applies its policy for the first few seconds and then stops. `restore`
 re-enables the package.
 
-On some XOS builds a supervisor (not init) restarts `com.transsion.usf` after the
-kill, so the disable flag alone removes nothing — the new process re-applies
-every policy from its config. The script detects that, names the respawned pid
-and its parent, and falls back to mounting the CPU-unlocked config so the
-respawn cannot re-cap the CPU; it then reports the state as **degraded**: the CPU
-cap is neutralised, the other USF methods (GPU, brightness, refresh, fps, volume)
-are not. On such a build `method cpu` is the honest choice — same CPU result,
-without the pretence that USF is off.
+On XOS the disable flag alone does not hold: the process is forked by `zygote64`
+on behalf of the framework, so `system_server` restarts it regardless of the
+`DISABLED` state. The script therefore escalates, in order:
+
+1. `pm disable-user` + kill.
+2. Still respawning → `pm uninstall --user 0 com.transsion.usf` + kill. This
+   holds; `restore` puts it back with `cmd package install-existing`.
+3. Still respawning → mount the CPU-unlocked config and report **degraded**: CPU
+   cap neutralised, the other methods (GPU, brightness, refresh, fps, volume)
+   not.
+
+With step 2 reached, `status` shows `GONE` — no package for user 0, no process,
+every `TranThermalEngine` method off. Nothing is managed then, including
+brightness and refresh rate; kernel thermal (trip points) is what is left.
 
 ### Method `cpu` — patch the config
 

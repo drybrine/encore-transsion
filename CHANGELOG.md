@@ -1,5 +1,31 @@
 # Changelog
 
+## v5.2.2-transsion.10
+
+**Method `all` now actually turns USF off, via the one lever XOS honours.**
+
+Disabling the package does not hold on XOS: the process is forked by `zygote64`
+on behalf of the framework, so `system_server` restarts it regardless of the
+`DISABLED` flag. Uninstalling it **for user 0** does hold — measured on an
+Infinix X6879: `pm uninstall --user 0 com.transsion.usf`, kill, and it never
+comes back.
+
+- Method `all` escalates instead of giving up: disable → kill → if it respawns,
+  `pm uninstall --user 0` (reversible with `cmd package install-existing`) → if
+  it *still* respawns, mount the CPU-unlocked config and report `DEGRADED`.
+- `restore` reverses whichever rung was reached: `install-existing` for an
+  uninstalled package, `pm enable` for a disabled one, umount for the patch.
+- `status` gained the `GONE` state: `uninstalled for user 0`, no process, every
+  TranThermalEngine method off — with the undo command printed.
+- `pkg_installed` now trusts an answering `pm`: if the package is missing from a
+  non-empty list it is genuinely uninstalled for the user, even though the APK
+  still exists on `/system`. The filesystem fallback is used only when `pm` is
+  mute, which is what it was for.
+
+Verified: 32 host tests (3 new: escalation to uninstall, the `GONE` state,
+`restore` reinstalling) plus 15 watchdog tests.
+
+
 ## v5.2.2-transsion.9
 
 **Method `all` now says when it is losing, and still neutralises the CPU cap.**

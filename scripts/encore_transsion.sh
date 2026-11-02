@@ -188,11 +188,25 @@ usf_pids() {
 # pm answers empty while the package manager is still coming up - service.sh
 # runs early enough to hit that window, and an empty answer used to read exactly
 # like "USF is not installed on this build", so the disable was skipped silently.
+pm_answers() { [ -n "$(pm list packages 2>/dev/null | head -n 1)" ]; }
+
 pkg_installed() {
-	if pm list packages 2>/dev/null | sed 's/^package://' | grep -qxF "$USF_PKG"; then
-		return 0
+	# A pm that answers is authoritative: if the package is not in its list it is
+	# really not installed for this user (uninstalled), even though the APK still
+	# exists on /system. Only a mute pm justifies the filesystem fallback.
+	if pm_answers; then
+		pm list packages 2>/dev/null | sed 's/^package://' | grep -qxF "$USF_PKG"
+		return
 	fi
 	usf_installed
+}
+
+# Installed for the build, but not for user 0: `pm uninstall --user 0` succeeded.
+# This is the state that actually stops the framework from restarting it.
+pkg_absent() {
+	pm_answers || return 1
+	pm list packages 2>/dev/null | sed 's/^package://' | grep -qxF "$USF_PKG" && return 1
+	return 0
 }
 
 pkg_disabled() {
@@ -345,6 +359,21 @@ kill_usf() {
 }
 
 disable_usf_locked() {
+	if pkg_absent; then
+		if [ -z "$(usf_pids)" ]; then
+			log "USF is already uninstalled for user 0 and not running; nothing to do"
+			print_freqs
+			return 0
+		fi
+		log "USF is uninstalled for user 0 but a process is still alive; killing it"
+		kill_usf
+		settle
+		if [ -z "$(usf_pids)" ]; then
+			log "APPLIED (method all): leftover USF process killed, package stays uninstalled"
+			print_freqs
+			return 0
+		fi
+	fi
 	if ! pkg_installed; then
 		log "$USF_PKG is not installed on this build; nothing to turn off"
 		return 0
@@ -380,6 +409,13 @@ disable_usf_locked() {
 	if [ -n "$respawn" ]; then
 		parent=$(awk '{print $4}' "$PROC_ROOT/$respawn/stat" 2>/dev/null)
 		log "WARN: USF respawned after being killed (pid $respawn, parent ${parent:-unknown}): the disable flag does not stop it"
+		log "ESCALATION: the disable flag does not hold on this build; uninstalling it for user 0 (reversible)"
+		if uninstall_usf_locked; then
+			log "APPLIED (method all): USF is uninstalled for user 0 and not running; every TranThermalEngine method is gone"
+			print_freqs
+			return 0
+		fi
+		respawn=$(usf_pids | head -n 1)
 		if [ -n "$SRC" ]; then
 			log "FALLBACK: mounting the CPU-unlocked thermal config so the respawn cannot re-apply the CPU cap"
 			apply_locked --mount-only
@@ -398,7 +434,50 @@ disable_usf_locked() {
 	return $rc
 }
 
+# The last lever that works on XOS: disabling the package leaves the framework
+# free to restart it through zygote, uninstalling it for user 0 does not.
+uninstall_usf_locked() {
+	if pkg_absent; then
+		log "already uninstalled for user 0"
+	else
+		if ! out=$(pm uninstall --user 0 "$USF_PKG" 2>&1); then
+			out=$(cmd package uninstall --user 0 "$USF_PKG" 2>&1) || {
+				log "ERROR: could not uninstall $USF_PKG for user 0: $out"
+				return 1
+			}
+		fi
+		settle
+		if ! pkg_absent; then
+			log "ERROR: $USF_PKG is still installed for user 0 after uninstall ($out)"
+			return 1
+		fi
+		log "package uninstalled for user 0 (reversible: cmd package install-existing $USF_PKG)"
+	fi
+
+	kill_usf
+	settle
+	if [ -n "$(usf_pids)" ]; then
+		log "WARN: USF still respawns even after being uninstalled for user 0"
+		return 1
+	fi
+	log "USF is gone: no process, package not installed for user 0"
+	return 0
+}
+
 enable_usf_locked() {
+	if pkg_absent; then
+		out=$(cmd package install-existing --user 0 "$USF_PKG" 2>&1) ||
+			out=$(pm install-existing --user 0 "$USF_PKG" 2>&1) || {
+			log "ERROR: could not restore $USF_PKG for user 0: $out"
+			return 1
+		}
+		settle
+		if ! pkg_installed; then
+			log "ERROR: $USF_PKG is still not installed for user 0 after install-existing"
+			return 1
+		fi
+		log "package restored for user 0"
+	fi
 	if ! pkg_installed; then
 		log "$USF_PKG is not installed on this build; nothing to re-enable"
 		return 0
@@ -582,14 +661,23 @@ do_status() {
 	fi
 
 	if [ "$m" = all ]; then
+		pids=$(usf_pids | tr '\n' ' ')
+		first=$(usf_pids | head -n 1)
+		if pkg_absent; then
+			ui "usf app     : $USF_PKG (uninstalled for user 0)"
+			ui "state       : GONE - no package, no TranThermalEngine method runs"
+			ui "usf pid(s)  : ${pids:-not running}"
+			ui "undo        : encore_transsion restore   (cmd package install-existing)"
+			ui "cpufreq caps (max vs hardware max):"
+			print_freqs
+			return 0
+		fi
 		if ! pkg_installed; then
 			ui "usf app     : absent"
 			ui "state       : nothing to unlock - USF only ships on XOS / HiOS / itelOS"
 			return 0
 		fi
 		ui "usf app     : $USF_PKG"
-		pids=$(usf_pids | tr '\n' ' ')
-		first=$(usf_pids | head -n 1)
 		if pkg_disabled; then
 			if [ -n "$first" ]; then
 				parent=$(awk '{print $4}' "$PROC_ROOT/$first/stat" 2>/dev/null)
@@ -846,6 +934,10 @@ do_start() {
 
 do_install() {
 	if [ "$(method)" = all ]; then
+		if pkg_absent; then
+			ui "- USF is already uninstalled for user 0: nothing to do"
+			return 0
+		fi
 		if ! pkg_installed; then
 			ui "- ROM: $(rom_name)"
 			ui "- No Transsion USF on this build: nothing to unlock"

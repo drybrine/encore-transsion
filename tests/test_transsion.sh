@@ -39,9 +39,11 @@ inst="${FAKE_PM_INSTALLED:-1}"
 case "$1" in
 list)
   [ "$inst" = 1 ] || exit 0
+  # A real pm never answers empty: other packages exist.
+  echo "package:com.android.settings"
   case "$3" in
   -d) [ "$st" = disabled ] && echo "package:$FAKE_PM_PKG" ;;
-  *) echo "package:$FAKE_PM_PKG" ;;
+  *) [ "$st" = absent ] || echo "package:$FAKE_PM_PKG" ;;
   esac
   ;;
 disable-user|disable)
@@ -49,6 +51,14 @@ disable-user|disable)
   echo disabled > "$FAKE_PM_STATE"
   ;;
 enable)
+  echo enabled > "$FAKE_PM_STATE"
+  ;;
+uninstall)
+  [ "${FAKE_PM_UNINSTALL_REFUSE:-0}" = 1 ] && { echo "Error: not allowed" >&2; exit 1; }
+  echo absent > "$FAKE_PM_STATE"
+  [ -n "${FAKE_PM_PROC:-}" ] && rm -rf "$FAKE_PM_PROC"
+  ;;
+install-existing)
   echo enabled > "$FAKE_PM_STATE"
   ;;
 esac
@@ -68,6 +78,7 @@ runp() { # run <args...> with the fake pm/getprop on PATH, no waiting
     TRANS_SION_CPU_ROOT="${TS_CPU:-/sys/devices/system/cpu/cpufreq}" \
     FAKE_PM_PKG="$FAKE_PKG" FAKE_PM_STATE="$TMP/pmstate" FAKE_PM_LOG="$TMP/pm.log" \
     FAKE_PM_INSTALLED="${FAKE_PM_INSTALLED:-1}" FAKE_PM_REFUSE="${FAKE_PM_REFUSE:-0}" \
+    FAKE_PM_UNINSTALL_REFUSE="${FAKE_PM_UNINSTALL_REFUSE:-0}" FAKE_PM_PROC="${FAKE_PM_PROC:-}" \
     sh "$BIN" "$@" 2>&1
 }
 
@@ -273,6 +284,46 @@ t_apply_without_patcher() {
 
 # --- method all (the usf-off path) ------------------------------------------
 
+t_all_escalates_to_uninstall() {
+  # Disabling leaves the framework free to restart USF through zygote. The only
+  # lever that holds is uninstalling it for user 0 - proven on an X6879.
+  reset_all
+  setup_fakes
+  mkdir -p "$TMP/proc/4242"
+  printf 'com.transsion.usf\000' > "$TMP/proc/4242/cmdline"
+  printf '4242 (com.transsion.usf) S 19176 4242 0 -1\n' > "$TMP/proc/4242/stat"
+  out=$(TSRC="$FIX/pretty.xml" TS_PROC="$TMP/proc" FAKE_PM_PROC="$TMP/proc/4242" runp apply 2>&1)
+  echo "$out" | grep -q 'ESCALATION' || { bad escalate "no escalation: $out"; return; }
+  echo "$out" | grep -q 'uninstalled for user 0' || { bad escalate "uninstall not reported: $out"; return; }
+  echo "$out" | grep -q 'APPLIED (method all): USF is uninstalled' \
+    || { bad escalate "not reported as applied: $out"; return; }
+  [ "$(cat "$TMP/pmstate" 2>/dev/null)" = absent ] \
+    || { bad escalate "package state not absent: $(cat "$TMP/pmstate" 2>/dev/null)"; return; }
+  ok all-escalate-uninstall
+}
+
+t_status_reports_gone() {
+  reset_all
+  setup_fakes
+  printf 'absent\n' > "$TMP/pmstate"
+  out=$(runp status 2>&1)
+  echo "$out" | grep -q 'state       : GONE' || { bad gone "no GONE state: $out"; return; }
+  echo "$out" | grep -q 'undo        : encore_transsion restore' \
+    || { bad gone "no undo hint: $out"; return; }
+  ok status-gone
+}
+
+t_restore_reinstalls_after_uninstall() {
+  reset_all
+  setup_fakes
+  printf 'absent\n' > "$TMP/pmstate"
+  out=$(runp restore 2>&1); rc=$?
+  [ "$rc" -eq 0 ] || { bad reinstall "exit $rc: $out"; return; }
+  grep -q 'install-existing' "$TMP/pm.log" || { bad reinstall "install-existing not called: $(cat "$TMP/pm.log")"; return; }
+  [ "$(cat "$TMP/pmstate" 2>/dev/null)" = enabled ] || { bad reinstall "package not restored"; return; }
+  ok restore-reinstall
+}
+
 t_pkg_installed_survives_empty_pm() {
   # service.sh runs early enough that `pm list packages` can answer empty. That
   # used to read as "USF is not installed" and the disable was skipped silently.
@@ -471,6 +522,9 @@ t_switch_all_to_cpu_reenables_first
 t_usage_lists_method
 t_pkg_installed_survives_empty_pm
 t_respawn_triggers_config_fallback
+t_all_escalates_to_uninstall
+t_status_reports_gone
+t_restore_reinstalls_after_uninstall
 t_status_flags_a_capped_policy
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
