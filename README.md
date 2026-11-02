@@ -59,6 +59,15 @@ app before the framework is up can restart the boot sequence — so on each boot
 USF applies its policy for the first few seconds and then stops. `restore`
 re-enables the package.
 
+On some XOS builds a supervisor (not init) restarts `com.transsion.usf` after the
+kill, so the disable flag alone removes nothing — the new process re-applies
+every policy from its config. The script detects that, names the respawned pid
+and its parent, and falls back to mounting the CPU-unlocked config so the
+respawn cannot re-cap the CPU; it then reports the state as **degraded**: the CPU
+cap is neutralised, the other USF methods (GPU, brightness, refresh, fps, volume)
+are not. On such a build `method cpu` is the honest choice — same CPU result,
+without the pretence that USF is off.
+
 ### Method `cpu` — patch the config
 
 1. Copies USF's own `tran_thermal.xml` and zeroes **only** the `cpu` /

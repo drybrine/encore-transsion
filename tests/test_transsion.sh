@@ -63,7 +63,9 @@ SH
 
 runp() { # run <args...> with the fake pm/getprop on PATH, no waiting
   PATH="$TMP/fakebin:$PATH" TRANS_SION_CONFIG="$TMP/cfg" TRANS_SION_SRC="${TSRC:-}" \
-    MODDIR="$TMP/mod" TRANS_SION_SETTLE=0 TRANS_SION_BOOT_WAIT=0 \
+    MODDIR="$TMP/mod" TRANS_SION_SETTLE=0 TRANS_SION_BOOT_WAIT=0 TRANS_SION_KILL_WAIT=0 \
+    TRANS_SION_PROC_ROOT="${TS_PROC:-/proc}" TRANS_SION_APP_ROOT="${TS_APP:-}" \
+    TRANS_SION_CPU_ROOT="${TS_CPU:-/sys/devices/system/cpu/cpufreq}" \
     FAKE_PM_PKG="$FAKE_PKG" FAKE_PM_STATE="$TMP/pmstate" FAKE_PM_LOG="$TMP/pm.log" \
     FAKE_PM_INSTALLED="${FAKE_PM_INSTALLED:-1}" FAKE_PM_REFUSE="${FAKE_PM_REFUSE:-0}" \
     sh "$BIN" "$@" 2>&1
@@ -271,6 +273,57 @@ t_apply_without_patcher() {
 
 # --- method all (the usf-off path) ------------------------------------------
 
+t_pkg_installed_survives_empty_pm() {
+  # service.sh runs early enough that `pm list packages` can answer empty. That
+  # used to read as "USF is not installed" and the disable was skipped silently.
+  reset_all
+  setup_fakes
+  mkdir -p "$TMP/approot/system/app/TranUsf"
+  out=$(FAKE_PM_INSTALLED=0 TS_APP="$TMP/approot" runp status 2>&1)
+  echo "$out" | grep -q 'usf app     : com.transsion.usf' \
+    || { bad pm-fallback "fs fallback did not detect USF: $out"; return; }
+  echo "$out" | grep -q 'not installed on this build' \
+    && { bad pm-fallback "still claimed USF is absent"; return; }
+  ok pm-fallback
+}
+
+t_respawn_triggers_config_fallback() {
+  # On XOS a supervisor restarts USF after the kill, so the disable flag removes
+  # nothing. The script must say so and neutralise the CPU cap via the config.
+  reset_all
+  setup_fakes
+  mkdir -p "$TMP/proc/4242"
+  printf 'com.transsion.usf\000' > "$TMP/proc/4242/cmdline"
+  printf '4242 (com.transsion.usf) S 3532 4242 0 -1\n' > "$TMP/proc/4242/stat"
+  out=$(TSRC="$FIX/pretty.xml" TS_PROC="$TMP/proc" runp apply 2>&1)
+  echo "$out" | grep -q 'USF respawned after being killed' \
+    || { bad respawn "respawn not reported: $out"; return; }
+  echo "$out" | grep -q 'parent 3532' \
+    || { bad respawn "parent pid not named: $out"; return; }
+  echo "$out" | grep -q 'FALLBACK' \
+    || { bad respawn "no fallback to the config patch: $out"; return; }
+  echo "$out" | grep -q 'DEGRADED' \
+    || { bad respawn "degraded state not stated: $out"; return; }
+  ok respawn-fallback
+}
+
+t_status_flags_a_capped_policy() {
+  # A cap must be visible at a glance, not by comparing two numbers by eye.
+  reset_all
+  setup_fakes
+  mkdir -p "$TMP/cpu/policy0" "$TMP/cpu/policy4"
+  printf '2000000\n' > "$TMP/cpu/policy0/scaling_max_freq"
+  printf '2000000\n' > "$TMP/cpu/policy0/cpuinfo_max_freq"
+  printf '2400000\n' > "$TMP/cpu/policy4/scaling_max_freq"
+  printf '2600000\n' > "$TMP/cpu/policy4/cpuinfo_max_freq"
+  out=$(TS_CPU="$TMP/cpu" runp status 2>&1)
+  echo "$out" | grep -q 'policy0: max=2000000 hw=2000000$' \
+    || { bad capped "unexpected policy0 line: $out"; return; }
+  echo "$out" | grep -q 'policy4: max=2400000 hw=2600000  <- CAPPED' \
+    || { bad capped "cap not flagged: $out"; return; }
+  ok capped-marker
+}
+
 t_method_default_is_all() {
   rm -rf "$TMP/cfg"
   out=$(run status 2>&1)
@@ -416,6 +469,9 @@ t_all_restore_reenables
 t_all_no_usf_is_noop
 t_switch_all_to_cpu_reenables_first
 t_usage_lists_method
+t_pkg_installed_survives_empty_pm
+t_respawn_triggers_config_fallback
+t_status_flags_a_capped_policy
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

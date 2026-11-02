@@ -1,5 +1,33 @@
 # Changelog
 
+## v5.2.2-transsion.9
+
+**Method `all` now says when it is losing, and still neutralises the CPU cap.**
+
+On XOS the disable flag is not enough: a supervisor (not init) restarts
+`com.transsion.usf` after the kill, so the new process re-applies every policy
+from its config. Observed on an Infinix X6879: package `DISABLED`, process alive
+with a fresh pid, big cluster capped at 2.4 GHz.
+
+- Respawn is detected, named (new pid + parent pid) and reported instead of being
+  swallowed. When it happens, the script falls back to mounting the CPU-unlocked
+  thermal config, so the respawn cannot re-apply the CPU cap, and states the
+  result as `DEGRADED (method all)`: CPU is neutralised, the other USF methods
+  (gpu, brightness, refresh, fps, volume) are not.
+- `pkg_installed` no longer trusts a single `pm list packages`: `service.sh` runs
+  early enough that `pm` can answer empty, which read exactly like "USF is not
+  installed on this build" and made the disable a silent no-op. It now waits for
+  `pm` and falls back to `/proc` + the APK directories.
+- `status` distinguishes `DISABLED, but the process is RUNNING` from `OFF (no
+  process)`, and flags every capped policy with `<- CAPPED` instead of leaving
+  two numbers to be compared by eye.
+- Fixed the pid matcher after the package name became a variable: the pattern
+  required two spaces, so no cmdline ever matched it.
+
+Verified: 29 host tests (3 new: empty-`pm` fallback, respawn fallback with parent
+pid, capped-policy marker) plus the 15 watchdog tests.
+
+
 ## v5.2.2-transsion.8
 
 **Method `all` is now the default: USF is turned off, not just capped.**

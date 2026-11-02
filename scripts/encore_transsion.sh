@@ -58,6 +58,11 @@ USF_PKG=${TRANS_SION_PKG:-com.transsion.usf}
 # not have to wait for a real boot.
 BOOT_WAIT=${TRANS_SION_BOOT_WAIT:-120}
 SETTLE=${TRANS_SION_SETTLE:-2}
+KILL_WAIT=${TRANS_SION_KILL_WAIT:-15}
+# Overridable so the host suite can point at fixtures instead of a live device.
+PROC_ROOT=${TRANS_SION_PROC_ROOT:-/proc}
+APP_ROOT=${TRANS_SION_APP_ROOT:-}
+CPU_ROOT=${TRANS_SION_CPU_ROOT:-/sys/devices/system/cpu/cpufreq}
 
 # Resolve our own directory: this script is installed as system/bin/encore_transsion
 # inside the module, and is also callable through the manager's bin symlink.
@@ -153,14 +158,15 @@ rom_name() {
 # Does the USF package exist on this build? Cheap check, no pm spawn unless the
 # file-based check is inconclusive.
 usf_installed() {
-	for d in /proc/[0-9]*; do
+	for d in "$PROC_ROOT"/[0-9]*; do
 		[ -r "$d/cmdline" ] || continue
 		c=$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null)
-		case "$c" in "$USF_PKG" | "$USF_PKG "\ *) return 0 ;; esac
+		case "$c" in "$USF_PKG" | "$USF_PKG "*) return 0 ;; esac
 	done
-	for p in /system/app/*Usf* /system/priv-app/*Usf* /system_ext/app/*Usf* \
-	         /system_ext/priv-app/*Usf* /product/app/*Usf* /product/priv-app/*Usf* \
-	         /product/app/*TranUsf* /system_ext/app/*TranUsf*; do
+	for p in "$APP_ROOT"/system/app/*Usf* "$APP_ROOT"/system/priv-app/*Usf* \
+	         "$APP_ROOT"/system_ext/app/*Usf* "$APP_ROOT"/system_ext/priv-app/*Usf* \
+	         "$APP_ROOT"/product/app/*Usf* "$APP_ROOT"/product/priv-app/*Usf* \
+	         "$APP_ROOT"/product/app/*TranUsf* "$APP_ROOT"/system_ext/app/*TranUsf*; do
 		[ -e "$p" ] && return 0
 	done
 	return 1
@@ -168,19 +174,25 @@ usf_installed() {
 
 # PIDs whose cmdline is exactly the USF package (no wildcard matching).
 usf_pids() {
-	for d in /proc/[0-9]*; do
+	for d in "$PROC_ROOT"/[0-9]*; do
 		[ -r "$d/cmdline" ] || continue
 		c=$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null) || continue
 		case "$c" in
-		"$USF_PKG" | "$USF_PKG "\ *) printf '%s\n' "${d#/proc/}" ;;
+		"$USF_PKG" | "$USF_PKG "*) printf '%s\n' "${d#"$PROC_ROOT"/}" ;;
 		esac
 	done
 }
 
 # --- package state (method all) ---------------------------------------------
 
+# pm answers empty while the package manager is still coming up - service.sh
+# runs early enough to hit that window, and an empty answer used to read exactly
+# like "USF is not installed on this build", so the disable was skipped silently.
 pkg_installed() {
-	pm list packages 2>/dev/null | sed 's/^package://' | grep -qxF "$USF_PKG"
+	if pm list packages 2>/dev/null | sed 's/^package://' | grep -qxF "$USF_PKG"; then
+		return 0
+	fi
+	usf_installed
 }
 
 pkg_disabled() {
@@ -205,6 +217,20 @@ method() {
 		return 0
 	fi
 	printf 'all'
+}
+
+# Wait until the package manager answers. Called before any pm decision, so an
+# empty `pm list packages` is never mistaken for "USF is not installed".
+wait_pm() {
+	command -v pm >/dev/null 2>&1 || return 1
+	[ -n "$(pm list packages 2>/dev/null | head -n 1)" ] && return 0
+	i=0
+	while [ "$i" -lt "$BOOT_WAIT" ]; do
+		sleep 1
+		[ -n "$(pm list packages 2>/dev/null | head -n 1)" ] && return 0
+		i=$((i + 1))
+	done
+	return 1
 }
 
 # Wait for the framework. Disabling a persistent system app before
@@ -234,13 +260,15 @@ set_pref() {
 }
 
 print_freqs() {
-	for d in /sys/devices/system/cpu/cpufreq/policy*; do
+	for d in "$CPU_ROOT"/policy*; do
 		[ -r "$d/scaling_max_freq" ] || continue
 		rd "$d/scaling_max_freq" || continue
 		_mx=$RF
 		_hw="?"
 		rd "$d/cpuinfo_max_freq" && _hw=$RF
-		ui "  ${d##*/}: max=$_mx hw=$_hw"
+		mark=""
+		[ -n "$_hw" ] && [ "$_hw" != "?" ] && [ "$_mx" != "$_hw" ] && mark="  <- CAPPED"
+		ui "  ${d##*/}: max=$_mx hw=$_hw$mark"
 	done
 }
 
@@ -273,7 +301,7 @@ restart_usf() {
 		# between the scan and here.
 		c=$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null) || continue
 		case "$c" in
-		"$USF_PKG" | "$USF_PKG "\ *) kill -9 "$p" 2>/dev/null ;;
+		"$USF_PKG" | "$USF_PKG "*) kill -9 "$p" 2>/dev/null ;;
 		esac
 	done
 	i=0
@@ -301,13 +329,13 @@ kill_usf() {
 	for p in $pids; do
 		# Re-read cmdline immediately before the kill: a PID can be recycled
 		# between the scan and here.
-		c=$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null) || continue
+		c=$(tr '\0' ' ' <"$PROC_ROOT/$p/cmdline" 2>/dev/null) || continue
 		case "$c" in
-		"$USF_PKG" | "$USF_PKG "\ *) kill -9 "$p" 2>/dev/null ;;
+		"$USF_PKG" | "$USF_PKG "*) kill -9 "$p" 2>/dev/null ;;
 		esac
 	done
 	i=0
-	while [ "$i" -lt 15 ]; do
+	while [ "$i" -lt "$KILL_WAIT" ]; do
 		[ -z "$(usf_pids)" ] && return 0
 		sleep 1
 		i=$((i + 1))
@@ -320,6 +348,9 @@ disable_usf_locked() {
 	if ! pkg_installed; then
 		log "$USF_PKG is not installed on this build; nothing to turn off"
 		return 0
+	fi
+	if ! wait_pm; then
+		log "WARN: the package manager is not answering yet; falling back to the filesystem check"
 	fi
 	if pkg_disabled; then
 		log "already off: $USF_PKG is disabled"
@@ -336,16 +367,33 @@ disable_usf_locked() {
 			log "ERROR: $USF_PKG still reports enabled after disable (the manager may be overriding it)"
 			return 1
 		fi
-		log "package disabled: every TranThermalEngine method is off (cpu, gpu, brightness, hbm, refresh, fps, volume, wifi/bt, powerhal, isolate, torch)"
+		log "package disabled (a running process is not stopped by the flag; the kill below decides)"
 	fi
 
 	kill_usf
 	rc=$?
-	# A persistent app can be respawned; give it a moment and check again.
+	# A persistent app can be respawned by a supervisor (on XOS something other
+	# than init restarts it). The disable flag alone then removes nothing: the
+	# new process reads the stock config and re-applies every policy.
 	settle
-	[ -n "$(usf_pids)" ] && log "WARN: USF respawned after being killed (persistent=true)"
+	respawn=$(usf_pids | head -n 1)
+	if [ -n "$respawn" ]; then
+		parent=$(awk '{print $4}' "$PROC_ROOT/$respawn/stat" 2>/dev/null)
+		log "WARN: USF respawned after being killed (pid $respawn, parent ${parent:-unknown}): the disable flag does not stop it"
+		if [ -n "$SRC" ]; then
+			log "FALLBACK: mounting the CPU-unlocked thermal config so the respawn cannot re-apply the CPU cap"
+			apply_locked --mount-only
+			log "DEGRADED (method all): USF is still running; the CPU cap is neutralised by the patched config, its other methods (gpu, brightness, refresh, fps, volume) are NOT"
+		else
+			log "ERROR (method all): USF respawns and no thermal config was found to patch; nothing is neutralised"
+		fi
+	fi
 
-	log "APPLIED (method all): USF is off; kernel thermal trip points still throttle"
+	if [ -z "$respawn" ]; then
+		log "APPLIED (method all): USF is off; kernel thermal trip points still throttle"
+	else
+		log "APPLIED (method all, degraded): CPU cap neutralised by the patched config"
+	fi
 	print_freqs
 	return $rc
 }
@@ -540,16 +588,27 @@ do_status() {
 			return 0
 		fi
 		ui "usf app     : $USF_PKG"
+		pids=$(usf_pids | tr '\n' ' ')
+		first=$(usf_pids | head -n 1)
 		if pkg_disabled; then
-			ui "state       : OFF (package disabled - no TranThermalEngine method runs)"
+			if [ -n "$first" ]; then
+				parent=$(awk '{print $4}' "$PROC_ROOT/$first/stat" 2>/dev/null)
+				ui "state       : DISABLED, but the process is RUNNING (pid $first, parent ${parent:-unknown})"
+				ui "              a supervisor restarts it, so the disable flag alone removes nothing"
+			else
+				ui "state       : OFF (package disabled, no process)"
+			fi
 		else
 			ui "state       : ON (USF owns cpu, gpu, brightness, refresh, fps, volume)"
 		fi
-		pids=$(usf_pids | tr '\n' ' ')
 		ui "usf pid(s)  : ${pids:-not running}"
 		if [ -n "$SRC" ]; then
 			if is_mounted "$SRC"; then
-				ui "config mount: patched config mounted (left over from method cpu)"
+				if [ -n "$first" ]; then
+					ui "config mount: patched config mounted (this is what neutralises the CPU cap)"
+				else
+					ui "config mount: patched config mounted (left over from method cpu)"
+				fi
 			else
 				ui "config mount: none (stock file)"
 			fi
